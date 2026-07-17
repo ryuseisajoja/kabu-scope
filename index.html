@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>カブスコープ - 株チェックAI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@500;700;900&family=Noto+Sans+JP:wght@400;500;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <script async src="https://cdn.jsdelivr.net/npm/tesseract.js@v5.0.4/dist/tesseract.min.js"></script>
+</head>
+<body>
+    <nav class="sidebar">
+        <div class="logo-area">
+            <div class="logo-icon">📈</div>
+            <span>カブスコープ</span>
+        </div>
+        <ul class="nav-links">
+            <li class="nav-item active" onclick="switchPage('dashboard')">🕒 ダッシュボード</li>
+            <li class="nav-item" onclick="switchPage('portfolio')">📊 ポートフォリオ</li>
+            <li class="nav-item" onclick="switchPage('history')">📅 資産推移</li>
+            <li class="nav-item" onclick="switchPage('ai-analysis')">✨ AI診断</li>
+            <li class="nav-item" onclick="switchPage('recommend')">⭐ 推奨銘柄</li>
+            <li class="nav-item" onclick="switchPage('dividend')">💰 配当予測</li>
+            <li class="nav-item" onclick="switchPage('ai-chat')">💬 AI相談</li>
+            <li class="nav-item" onclick="switchPage('guide')">📖 買い方ガイド</li>
+        </ul>
+        <div class="user-profile">
+            <div class="user-name">粉家瑠聖</div>
+            <div class="user-email">ryusei30saku@gmail.com</div>
+        </div>
+    </nav>
+    <main class="main-content">
+        <!-- Dashboard -->
+        <section id="dashboard" class="page-section active">
+            <div class="page-header">
+                <h2 class="page-title">ダッシュボード</h2>
+                <p class="page-desc">保有銘柄の集中度・業種の分散診断と、株主優待の管理はこちらから行えます。</p>
+            </div>
+            <div class="stats-grid">
+                <div class="stat-card"><div><p class="stat-label">保有銘柄数</p><p class="stat-value">0 銘柄</p></div><div class="stat-icon">📦</div></div>
+                <div class="stat-card"><div><p class="stat-label">概算取得総額</p><p class="stat-value">¥0</p></div><div class="stat-icon">💼</div></div>
+                <div class="stat-card"><div><p class="stat-label">上位1銘柄集中度</p><p class="stat-value">- %</p></div><div class="stat-icon">📈</div></div>
+            </div>
+            <div class="btn-group">
+                <button class="btn btn-primary" onclick="openScreenshotUpload()">📷 スクショで追加</button>
+                <button class="btn btn-secondary" onclick="openManualAdd()">＋ 手動で追加</button>
+                <button class="btn btn-secondary" id="refreshPricesBtn" onclick="refreshPrices(true)">🔄 株価を更新</button>
+            </div>
+            <p id="priceUpdatedAt" style="color: var(--text-sub); font-size: 12px; margin: -16px 0 24px 0;"></p>
+            <div class="card-container" id="alertsCard" style="display: none; border-left: 4px solid var(--primary-color);">
+                <h3 class="card-title">🔔 お知らせ・アラート</h3>
+                <div id="alertsList"></div>
+            </div>
+            <div class="card-container">
+                <h3 class="card-title">保有銘柄一覧</h3>
+                <div style="overflow-x: auto;">
+                    <table class="stock-table">
+                        <thead><tr><th>銘柄名</th><th>株数</th><th>取得単価</th><th>現在値</th><th>評価損益</th><th></th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+        <!-- Portfolio -->
+        <section id="portfolio" class="page-section">
+            <div class="page-header">
+                <h2 class="page-title">ポートフォリオ詳細</h2>
+                <p class="page-desc">資産の構成比率とセクターの偏りを確認できます。</p>
+            </div>
+            <div class="portfolio-gain-section" style="margin-bottom: 20px;">
+                <!-- P&L情報が動的に挿入される -->
+            </div>
+            <div class="portfolio-layout">
+                <div class="card-container">
+                    <h3 class="card-title">セクター別比率</h3>
+                    <div class="portfolio-sector">
+                        <!-- セクター分布が動的に挿入される -->
+                    </div>
+                </div>
+                <div class="card-container">
+                    <h3 class="card-title">上位構成比率</h3>
+                    <table class="stock-table">
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+        <!-- History -->
+        <section id="history" class="page-section">
+            <div class="page-header">
+                <h2 class="page-title">資産推移</h2>
+                <p class="page-desc">日ごとの評価額の変化を記録・グラフ化します（アプリを開くたびに自動記録）。</p>
+            </div>
+            <div class="card-container">
+                <h3 class="card-title">評価額の推移</h3>
+                <div id="historyChart"></div>
+            </div>
+            <div class="card-container">
+                <h3 class="card-title">日次履歴</h3>
+                <div style="overflow-x: auto;">
+                    <table class="stock-table">
+                        <thead><tr><th>日付</th><th>評価額</th><th>評価損益</th><th>保有数</th></tr></thead>
+                        <tbody id="historyTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+        <!-- Dividend Simulator -->
+        <section id="dividend" class="page-section">
+            <div class="page-header">
+                <h2 class="page-title">配当シミュレーター</h2>
+                <p class="page-desc">保有銘柄から年間配当を見積もり、10年後までの配当収入を予測します。</p>
+            </div>
+            <div class="stats-grid" id="dividendStats"></div>
+            <div class="card-container">
+                <h3 class="card-title">銘柄別の配当内訳</h3>
+                <div style="overflow-x: auto;">
+                    <table class="stock-table">
+                        <thead><tr><th>銘柄名</th><th>株数</th><th>1株配当</th><th>利回り</th><th>年間配当</th></tr></thead>
+                        <tbody id="dividendBreakdownBody"></tbody>
+                    </table>
+                </div>
+                <p style="font-size: 12px; color: var(--text-sub); margin-top: 12px;">※ 配当データはマスターデータの目安値です。最新の配当情報は証券会社等でご確認ください。</p>
+            </div>
+            <div class="card-container">
+                <h3 class="card-title">10年間の配当予測（年3%増配を仮定）</h3>
+                <div id="dividendProjection"></div>
+            </div>
+        </section>
+        <!-- AI Analysis -->
+        <section id="ai-analysis" class="page-section">
+            <div class="page-header">
+                <h2 class="page-title">AI診断レポート</h2>
+                <p class="page-desc">保有内容をもとに、足りない視点や集中リスクを自動判定します。</p>
+            </div>
+            <div class="ai-report-header">
+                <div class="score-badge" id="scoreBadge">-</div>
+                <div>
+                    <h3 id="scoreTitle">銘柄を追加すると診断が始まります</h3>
+                    <p id="scoreDate" style="color: var(--text-sub); font-size: 14px; margin-top: 4px;"></p>
+                </div>
+            </div>
+            <div class="card-container">
+                <h3 class="card-title">AIからの重要ポイント</h3>
+                <div class="diagnostic-list" id="diagnosticList">
+                    <!-- 診断結果が動的に挿入される -->
+                </div>
+            </div>
+        </section>
+        <!-- Recommended Stocks -->
+        <section id="recommend" class="page-section">
+            <div class="page-header">
+                <h2 class="page-title">初心者向け推奨銘柄</h2>
+                <p class="page-desc">あなたのポートフォリオに足りない要素を補える、初心者向けの厳選銘柄</p>
+            </div>
+            <div class="recommendation-banner">
+                <div class="banner-icon">💡</div>
+                <div>
+                    <h3>あなたのポートフォリオを診断した結果</h3>
+                    <p>まずは「安定配当」や「株主優待」のある大型銘柄から始めるのがおすすめです。</p>
+                </div>
+            </div>
+            <div class="recommendations-grid">
+                <!-- 推奨銘柄が動的に挿入される -->
+            </div>
+        </section>
+        <!-- AI Chat -->
+        <section id="ai-chat" class="page-section">
+            <div class="page-header">
+                <h2 class="page-title">AI相談ボード</h2>
+                <p class="page-desc">投資について何でも相談。初心者向けの回答が返ってきます</p>
+            </div>
+            <div class="card-container" style="padding: 16px 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;">
+                    <p id="claudeKeyStatus" style="font-size: 13.5px; margin: 0;"></p>
+                    <button class="btn btn-secondary" style="padding: 8px 14px; font-size: 13px;" onclick="toggleChatSettings()">⚙️ AI設定</button>
+                </div>
+                <div id="chatSettingsPanel" style="display: none; margin-top: 14px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+                    <p style="font-size: 13px; color: var(--text-sub); margin: 0 0 10px 0;">
+                        Anthropic の APIキー（<a href="https://platform.claude.com/" target="_blank" rel="noopener" style="color: var(--accent-blue);">platform.claude.com</a> で取得）を設定すると、Claude がポートフォリオを踏まえて回答します。<br>
+                        🔒 キーは<strong>このブラウザの localStorage にのみ</strong>保存され、外部に送信されるのは Anthropic のAPIサーバーだけです。共有PCでは使用後に削除してください。
+                    </p>
+                    <div id="claudeKeyForm" style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <input type="password" id="claudeApiKeyInput" placeholder="sk-ant-api03-..." autocomplete="off"
+                               style="flex: 1; min-width: 220px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 13px; font-family: var(--font-mono);">
+                        <button class="btn btn-primary" style="padding: 10px 16px; font-size: 13px;" onclick="saveClaudeApiKey()">保存</button>
+                    </div>
+                    <button id="claudeKeyClearBtn" class="btn btn-secondary" style="display: none; padding: 8px 14px; font-size: 13px; color: var(--loss);" onclick="clearClaudeApiKey()">🗑️ APIキーを削除</button>
+                </div>
+            </div>
+            <div class="chat-container">
+                <div class="chat-history">
+                    <div class="chat-message ai-message">
+                        <div class="message-avatar">🤖</div>
+                        <div class="message-content">
+                            <p>こんにちは！カブスコープAIアドバイザーです。今日は何についてお悩みですか？</p>
+                            <div class="quick-questions">
+                                <button class="quick-btn" onclick="sendQuestion('配当金について教えてください')">配当金とは？</button>
+                                <button class="quick-btn" onclick="sendQuestion('株主優待ってお得ですか？')">株主優待とは？</button>
+                                <button class="quick-btn" onclick="sendQuestion('NISAと個別株どちらを選ぶ？')">NISA vs 個別株</button>
+                                <button class="quick-btn" onclick="sendQuestion('初心者はいくらから始める？')">投資額の目安</button>
+                                <button class="quick-btn" onclick="sendQuestion('私のポートフォリオを診断して')">私の診断</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="chat-input-area">
+                    <input type="text" class="chat-input" placeholder="何について相談したいですか？" id="chatInput">
+                    <button class="btn btn-primary" onclick="sendChat()">送信</button>
+                </div>
+            </div>
+        </section>
+        <!-- Guide -->
+        <section id="guide" class="page-section">
+            <div class="page-header">
+                <h2 class="page-title">配当・株主優待ガイド</h2>
+                <p class="page-desc">個別株だからこそ得られる「配当」と「株主優待」の楽しさ</p>
+            </div>
+            <div class="guide-tabs">
+                <div class="guide-tab active" onclick="switchGuideTab(0)">配当金のもらい方</div>
+                <div class="guide-tab" onclick="switchGuideTab(1)">株主優待を選ぶコツ</div>
+                <div class="guide-tab" onclick="switchGuideTab(2)">NISAで配当非課税</div>
+            </div>
+            <div class="card-container">
+                <div class="guide-content active" id="guide-tab-0">
+                    <div class="step-container">
+                        <div class="step-number">1</div>
+                        <div class="step-content">
+                            <h4>配当金とは何か？</h4>
+                            <p>企業が利益の一部を株主に還元したお金が「配当金」です。例えば、あなたが100株持っていて、1株あたり年間100円の配当があれば、年間10,000円がもらえます。</p>
+                            <p style="background-color: var(--primary-light); padding: 12px; border-radius: 8px; margin-top: 12px;"><strong>💡 初心者向けポイント：</strong>個別株なら、毎年決まった時期に現金が振り込まれる喜びを体験できます。</p>
+                        </div>
+                    </div>
+                    <div class="step-container">
+                        <div class="step-number">2</div>
+                        <div class="step-content">
+                            <h4>配当をもらうための条件</h4>
+                            <p>配当をもらうには「権利確定日」に株を保有していることが必須。通常は年2回（決算期）に配当が出ます。</p>
+                            <p>【例】3月決算の企業なら、3月末の権利確定日までに株を保有 → 6月頃に配当金が振り込まれる</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="guide-content" id="guide-tab-1">
+                    <div class="step-container">
+                        <div class="step-number">1</div>
+                        <div class="step-content">
+                            <h4>株主優待の見つけ方</h4>
+                            <p>株主優待は企業ごとに異なります。「自分が使うもの」「欲しいもの」を優待にしている企業を選ぶことがコツ。</p>
+                            <p style="margin-top: 12px;"><strong>【優待の例】</strong></p>
+                            <ul style="list-style: none; padding-left: 0;">
+                                <li>✓ 飲食チェーン → 食事券や割引</li>
+                                <li>✓ 百貨店 → 商品券</li>
+                                <li>✓ 航空会社 → 航空券割引</li>
+                                <li>✓ ホテル → 宿泊割引</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="step-container">
+                        <div class="step-number">2</div>
+                        <div class="step-content">
+                            <h4>優待銘柄を選ぶコツ</h4>
+                            <p>「100株保有で優待がもらえる」という企業が初心者向けです。必要な投資額が少なく、気軽に始めやすいのが特徴。</p>
+                            <p>優待内容と現在値のバランスを見て、「この優待ならもらう価値がある」と感じるものを選びましょう。</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="guide-content" id="guide-tab-2">
+                    <div class="step-container">
+                        <div class="step-number">1</div>
+                        <div class="step-content">
+                            <h4>NISAで配当を非課税に</h4>
+                            <p>通常、配当金には約20%の税金がかかります。年間10万円の配当があれば、税金で約2万円差し引かれてしまいます。</p>
+                            <p style="background-color: var(--primary-light); padding: 12px; border-radius: 8px; margin-top: 12px;"><strong>✨ NISA活用：</strong>NISAで保有している株の配当は非課税。つまり、10万円の配当がそのまま手に入ります。（受取方法は「株式数比例配分方式」を選択）</p>
+                        </div>
+                    </div>
+                    <div class="step-container">
+                        <div class="step-number">2</div>
+                        <div class="step-content">
+                            <h4>初心者のNISA戦略</h4>
+                            <p>新NISA（2024年～）では年間360万円まで投資できます。まずは「配当が安定している優良企業」から始めるのがおすすめ。</p>
+                            <p>毎年配当が非課税で振り込まれるという体験が、個別株投資への興味を深めていきます。</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+    <div class="bottom-nav">
+        <div class="bottom-nav-item active" onclick="switchPage('dashboard')"><span class="bottom-nav-icon">🕒</span><span>ダッシュ</span></div>
+        <div class="bottom-nav-item" onclick="switchPage('ai-analysis')"><span class="bottom-nav-icon">✨</span><span>AI診断</span></div>
+        <div class="bottom-nav-item" onclick="switchPage('ai-chat')"><span class="bottom-nav-icon">💬</span><span>相談</span></div>
+        <div class="bottom-nav-item" onclick="switchPage('guide')"><span class="bottom-nav-icon">📖</span><span>ガイド</span></div>
+    </div>
+    <div id="modalOverlay" class="modal-overlay" onclick="closeModal(); closeScreenshotModal(); closeManualAddModal();"></div>
+    <!-- 銘柄詳細モーダル -->
+    <div id="stockDetailModal" class="modal-content">
+        <div class="modal-header">
+            <h2 id="modalStockName">銘柄名</h2>
+            <button class="modal-close" onclick="closeModal()">✕</button>
+        </div>
+        <div class="modal-body">
+            <div class="stock-detail-section">
+                <h3>基本情報</h3>
+                <div class="detail-grid">
+                    <div class="detail-item">
+                        <label>証券コード</label>
+                        <p id="modalCode">XXXX</p>
+                    </div>
+                    <div class="detail-item">
+                        <label>セクター</label>
+                        <p id="modalPrice">-</p>
+                    </div>
+                    <div class="detail-item">
+                        <label>配当利回り</label>
+                        <p id="modalDividend" style="color: #FF6B35; font-weight: bold;">0%</p>
+                    </div>
+                </div>
+            </div>
+            <div class="stock-detail-section">
+                <h3>株主優待・特徴</h3>
+                <p id="modalBenefit">情報読み込み中...</p>
+            </div>
+            <div class="stock-detail-section">
+                <h3>初心者向けアドバイス</h3>
+                <div id="modalAdvice" class="advice-box"></div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">閉じる</button>
+            <button class="btn btn-primary" onclick="alert('証券会社のアプリで検索してください：銘柄コード ' + document.getElementById('modalCode').textContent)">買ってみる</button>
+        </div>
+    </div>
+    <!-- スクショ追加モーダル -->
+    <div id="screenshotModal" class="modal-content">
+        <div class="modal-header">
+            <h2>スクショで銘柄を追加</h2>
+            <button class="modal-close" onclick="closeScreenshotModal()">✕</button>
+        </div>
+        <div class="modal-body">
+            <div class="screenshot-area">
+                <p style="text-align: center; color: var(--text-sub); margin-bottom: 20px;">証券会社のスクショから、自動で銘柄情報を読み込みます</p>
+                <input type="file" id="screenshotInput" accept="image/*" style="margin-bottom: 20px;">
+                <div id="screenshotPreview" style="margin-bottom: 20px;">
+                    <img id="previewImg" style="max-width: 100%; border-radius: 8px; display: none;">
+                </div>
+                <div id="ocrStatus" style="display: none; margin-bottom: 20px;">
+                    <div style="background-color: var(--primary-light); padding: 16px; border-radius: 8px; text-align: center;">
+                        <p id="statusText" style="color: var(--primary-color); font-weight: bold;">🔍 OCR処理中...</p>
+                        <div id="progressBar" style="margin-top: 12px; height: 8px; background-color: white; border-radius: 4px; overflow: hidden;">
+                            <div style="height: 100%; background-color: var(--primary-color); width: 0%; animation: progress 2s ease-in-out infinite;"></div>
+                        </div>
+                    </div>
+                </div>
+                <div id="extractedStocks" style="margin-top: 20px;"></div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeScreenshotModal()">キャンセル</button>
+            <button class="btn btn-primary" id="analyzeBtn" onclick="performOCR()">分析する</button>
+        </div>
+    </div>
+    <!-- 手動追加モーダル -->
+    <div id="manualAddModal" class="modal-content">
+        <div class="modal-header">
+            <h2>手動で銘柄を追加</h2>
+            <button class="modal-close" onclick="closeManualAddModal()">✕</button>
+        </div>
+        <div class="modal-body">
+            <div class="stock-detail-section">
+                <h3>銘柄を選択</h3>
+                <select id="manualStockSelect" style="width: 100%; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 15px;">
+                    <option value="">-- 銘柄を選択してください --</option>
+                </select>
+                <p style="font-size: 13px; color: var(--text-sub); margin: 12px 0 8px 0;">リストにない銘柄は、証券コード（4桁）を直接入力できます。名称・株価は自動取得されます。</p>
+                <input type="text" id="manualCodeInput" maxlength="4" placeholder="例: 6501（リストにない銘柄のコード）" style="width: 100%; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 15px;">
+            </div>
+            <div class="stock-detail-section">
+                <h3>保有情報</h3>
+                <div class="detail-grid">
+                    <div class="detail-item">
+                        <label>株数</label>
+                        <input type="number" id="manualShares" min="1" placeholder="例: 100" style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 16px;">
+                    </div>
+                    <div class="detail-item">
+                        <label>取得単価 (¥)</label>
+                        <input type="number" id="manualPrice" min="1" placeholder="例: 2500" style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 16px;">
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeManualAddModal()">キャンセル</button>
+            <button class="btn btn-primary" onclick="submitManualAdd()">✓ 追加する</button>
+        </div>
+    </div>
+    <script src="main.js"></script>
+</body>
+</html>
