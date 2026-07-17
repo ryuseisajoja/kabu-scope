@@ -57,10 +57,7 @@ const STOCK_MASTER_DATA = {
     '4689': { name: 'LINEヤフー', sector: 'IT', dividend: 5.6, dividend_yield: 1.1 },
     '6098': { name: 'リクルートホールディングス', sector: 'IT', dividend: 25, dividend_yield: 0.3 },
     '4755': { name: '楽天グループ', sector: 'IT', dividend: 0, dividend_yield: 0.0 },
-    '9613': { name: 'NTTデータグループ', sector: 'IT', dividend: 23, dividend_yield: 0.8 },
     '4307': { name: '野村総合研究所', sector: 'IT', dividend: 60, dividend_yield: 1.3 },
-    '9719': { name: 'SCSK', sector: 'IT', dividend: 88, dividend_yield: 2.0 },
-    '4739': { name: '伊藤忠テクノソリューションズ', sector: 'IT', dividend: 60, dividend_yield: 1.5 },
     '2413': { name: 'エムスリー', sector: 'IT', dividend: 12, dividend_yield: 0.8 },
     '7974': { name: '任天堂', sector: 'IT', dividend: 120, dividend_yield: 1.2 },
     '9766': { name: 'コナミグループ', sector: 'IT', dividend: 60, dividend_yield: 0.4 },
@@ -319,7 +316,22 @@ async function fetchQuote(code) {
     };
 }
 
-// 複数銘柄の株価を取得（5分キャッシュ付き）
+// GitHub Actionsが生成する株価スナップショット（prices.json）
+// httpsでホストされている場合、Yahoo Finance直アクセスはCORSでブロックされるため、
+// 同一オリジンのスナップショットにフォールバックする
+let PRICE_SNAPSHOT = null;
+async function loadPriceSnapshot() {
+    if (PRICE_SNAPSHOT !== null) return PRICE_SNAPSHOT;
+    try {
+        const res = await fetch('prices.json?t=' + Math.floor(Date.now() / 60000));
+        PRICE_SNAPSHOT = res.ok ? await res.json() : false;
+    } catch (e) {
+        PRICE_SNAPSHOT = false;
+    }
+    return PRICE_SNAPSHOT;
+}
+
+// 複数銘柄の株価を取得（5分キャッシュ → Yahoo直接 → スナップショットの順）
 async function fetchRealTimePrices(codes, force = false) {
     const cache = getPriceCache();
     const now = Date.now();
@@ -335,13 +347,40 @@ async function fetchRealTimePrices(codes, force = false) {
     }
 
     if (toFetch.length > 0) {
+        // 1) Yahoo Financeへ直接（file://やlocalhostで動作。httpsではCORSで失敗する）
         const settled = await Promise.allSettled(toFetch.map(fetchQuote));
+        const missing = [];
         settled.forEach((s, i) => {
             if (s.status === 'fulfilled') {
                 result[toFetch[i]] = s.value;
                 cache[toFetch[i]] = s.value;
+            } else {
+                missing.push(toFetch[i]);
             }
         });
+
+        // 2) 取れなかった銘柄はスナップショット（GitHub Actionsが定期更新）から補完
+        if (missing.length > 0) {
+            const snap = await loadPriceSnapshot();
+            if (snap && snap.prices) {
+                const snapTime = Date.parse(snap.updated) || now;
+                for (const code of missing) {
+                    const q = snap.prices[code];
+                    if (q) {
+                        result[code] = {
+                            code,
+                            price: q.price,
+                            previousClose: q.previousClose,
+                            changePercent: q.changePercent,
+                            name: null,
+                            time: snapTime,
+                            snapshot: true
+                        };
+                    }
+                }
+            }
+        }
+
         localStorage.setItem(PRICE_CACHE_KEY, JSON.stringify(cache));
     }
 
@@ -363,6 +402,7 @@ async function refreshPrices(force = false) {
     try {
         const prices = await fetchRealTimePrices(portfolio.map(s => s.code), force);
         let updated = 0;
+        let snapshotTime = null;
 
         portfolio.forEach(stock => {
             const q = prices[stock.code];
@@ -370,6 +410,7 @@ async function refreshPrices(force = false) {
                 stock.currentPrice = q.price;
                 stock.changePercent = q.changePercent;
                 stock.priceTime = q.time;
+                if (q.snapshot) snapshotTime = q.time;
                 updated++;
             }
         });
@@ -379,9 +420,13 @@ async function refreshPrices(force = false) {
         if (document.getElementById('portfolio').classList.contains('active')) updatePortfolioPage(portfolio);
 
         if (statusEl) {
-            statusEl.textContent = updated > 0
-                ? `📡 株価更新: ${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}（${updated}/${portfolio.length}銘柄）`
-                : '⚠️ 株価を取得できませんでした（オフライン？）';
+            if (updated === 0) {
+                statusEl.textContent = '⚠️ 株価を取得できませんでした（オフライン？）';
+            } else if (snapshotTime) {
+                statusEl.textContent = `📡 株価更新（${new Date(snapshotTime).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}時点のデータ・${updated}/${portfolio.length}銘柄）`;
+            } else {
+                statusEl.textContent = `📡 株価更新: ${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}（${updated}/${portfolio.length}銘柄）`;
+            }
         }
     } catch (e) {
         console.error('price refresh error:', e);

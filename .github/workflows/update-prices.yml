@@ -1,0 +1,40 @@
+name: 株価スナップショット更新
+
+on:
+  schedule:
+    # 東証の取引時間帯（JST 9:00-15:45 ≒ UTC 0:00-6:45）に30分ごと + 引け後1回
+    - cron: '*/30 0-6 * * 1-5'
+    - cron: '0 7 * * 1-5'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-prices
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 株価を取得
+        run: node scripts/fetch_prices.mjs
+
+      - name: 変更があればコミット
+        run: |
+          if git diff --quiet prices.json 2>/dev/null && [ -f prices.json ]; then
+            echo "変更なし"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add prices.json
+          git commit -m "chore: 株価スナップショット更新 [skip ci]" || echo "変更なし"
+          git push
