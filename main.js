@@ -1,4 +1,5 @@
 // ===== カブスコープ - 株チェックAI =====
+// v3: 全銘柄対応 + クリーンUI
 
 // ===== 銘柄マスターデータ =====
 // dividend: 1株あたり年間配当（円・目安）, dividend_yield: 配当利回り（%・目安）
@@ -441,19 +442,45 @@ async function fetchQuote(code) {
     };
 }
 
-// GitHub Actionsが生成する株価スナップショット（prices.json）
+// GitHub Actionsが生成する株価スナップショット
+// - prices.json     … 人気銘柄（30分ごと更新）
+// - prices_all.json … 全上場銘柄（1日1回更新）
 // httpsでホストされている場合、Yahoo Finance直アクセスはCORSでブロックされるため、
 // 同一オリジンのスナップショットにフォールバックする
-let PRICE_SNAPSHOT = null;
-async function loadPriceSnapshot() {
-    if (PRICE_SNAPSHOT !== null) return PRICE_SNAPSHOT;
+const PRICE_SNAPSHOTS = {};
+async function loadSnapshotFile(file) {
+    if (PRICE_SNAPSHOTS[file] !== undefined) return PRICE_SNAPSHOTS[file];
     try {
-        const res = await fetch('prices.json?t=' + Math.floor(Date.now() / 60000));
-        PRICE_SNAPSHOT = res.ok ? await res.json() : false;
+        const res = await fetch(file + '?t=' + Math.floor(Date.now() / 60000));
+        PRICE_SNAPSHOTS[file] = res.ok ? await res.json() : false;
     } catch (e) {
-        PRICE_SNAPSHOT = false;
+        PRICE_SNAPSHOTS[file] = false;
     }
-    return PRICE_SNAPSHOT;
+    return PRICE_SNAPSHOTS[file];
+}
+
+// 全上場銘柄マスター（JPX公式リストから生成、GitHub Actionsが週次更新）
+// 形式: { "7203": ["トヨタ自動車", "自動車"], ... }
+let FULL_MASTER = null;
+async function loadFullMaster() {
+    if (FULL_MASTER !== null) return FULL_MASTER;
+    try {
+        const res = await fetch('master.json');
+        FULL_MASTER = res.ok ? (await res.json()).stocks : false;
+    } catch (e) {
+        FULL_MASTER = false;
+    }
+    return FULL_MASTER;
+}
+
+// コードから銘柄情報を取得（キュレーション済みマスター優先 → 全銘柄マスター）
+function getMasterInfo(code) {
+    const m = STOCK_MASTER_DATA[code];
+    if (m) return { name: m.name, sector: m.sector, curated: true };
+    if (FULL_MASTER && FULL_MASTER[code]) {
+        return { name: FULL_MASTER[code][0], sector: FULL_MASTER[code][1], curated: false };
+    }
+    return null;
 }
 
 // 複数銘柄の株価を取得（5分キャッシュ → Yahoo直接 → スナップショットの順）
@@ -485,25 +512,31 @@ async function fetchRealTimePrices(codes, force = false) {
         });
 
         // 2) 取れなかった銘柄はスナップショット（GitHub Actionsが定期更新）から補完
-        if (missing.length > 0) {
-            const snap = await loadPriceSnapshot();
-            if (snap && snap.prices) {
-                const snapTime = Date.parse(snap.updated) || now;
-                for (const code of missing) {
-                    const q = snap.prices[code];
-                    if (q) {
-                        result[code] = {
-                            code,
-                            price: q.price,
-                            previousClose: q.previousClose,
-                            changePercent: q.changePercent,
-                            name: null,
-                            time: snapTime,
-                            snapshot: true
-                        };
-                    }
+        //    prices.json（人気銘柄・30分ごと）→ prices_all.json（全銘柄・日次）の順
+        let stillMissing = missing;
+        for (const file of ['prices.json', 'prices_all.json']) {
+            if (stillMissing.length === 0) break;
+            const snap = await loadSnapshotFile(file);
+            if (!snap || !snap.prices) continue;
+            const snapTime = Date.parse(snap.updated) || now;
+            const next = [];
+            for (const code of stillMissing) {
+                const q = snap.prices[code];
+                if (q) {
+                    result[code] = {
+                        code,
+                        price: q.price,
+                        previousClose: q.previousClose,
+                        changePercent: q.changePercent,
+                        name: null,
+                        time: snapTime,
+                        snapshot: true
+                    };
+                } else {
+                    next.push(code);
                 }
             }
+            stillMissing = next;
         }
 
         localStorage.setItem(PRICE_CACHE_KEY, JSON.stringify(cache));
@@ -632,10 +665,10 @@ function updateStockTable(portfolio) {
 
     tbody.innerHTML = portfolio.map(stock => {
         const gain = (stock.currentPrice - stock.acquisitionPrice) * stock.shares;
-        const gainColor = gain >= 0 ? '#0E9F6E' : '#D94F2B';
+        const gainColor = gain >= 0 ? '#1E7A4E' : '#D64545';
         const gainSign = gain >= 0 ? '+' : '-';
         const changeHtml = (typeof stock.changePercent === 'number')
-            ? `<span style="color: ${stock.changePercent >= 0 ? '#0E9F6E' : '#D94F2B'}; font-size: 12px;">${stock.changePercent >= 0 ? '▲' : '▼'}${Math.abs(stock.changePercent).toFixed(2)}%</span>`
+            ? `<span style="color: ${stock.changePercent >= 0 ? '#1E7A4E' : '#D64545'}; font-size: 12px;">${stock.changePercent >= 0 ? '▲' : '▼'}${Math.abs(stock.changePercent).toFixed(2)}%</span>`
             : '';
         return `
         <tr>
@@ -645,7 +678,7 @@ function updateStockTable(portfolio) {
             <td>${formatYen(stock.currentPrice)} ${changeHtml}</td>
             <td style="color: ${gainColor}; font-weight: bold;">${gainSign}${formatYen(Math.abs(gain))}</td>
             <td style="text-align: center;">
-                <button style="background: none; border: none; cursor: pointer; color: #D94F2B; font-size: 16px;" onclick="removeStockFromPortfolio('${escapeHtml(stock.code)}')" title="削除">🗑️</button>
+                <button style="background: none; border: none; cursor: pointer; color: #D64545; font-size: 16px;" onclick="removeStockFromPortfolio('${escapeHtml(stock.code)}')" title="削除">🗑️</button>
             </td>
         </tr>`;
     }).join('');
@@ -670,7 +703,7 @@ function updatePortfolioPage(portfolio) {
     const gainPercent = totalAcquisition > 0 ? (totalGain / totalAcquisition) * 100 : 0;
 
     if (gainSection) {
-        const gainColor = totalGain >= 0 ? '#0E9F6E' : '#D94F2B';
+        const gainColor = totalGain >= 0 ? '#1E7A4E' : '#D64545';
         const gainSign = totalGain >= 0 ? '+' : '-';
         gainSection.innerHTML = `
             <div style="padding: 16px; background-color: ${gainColor}15; border-radius: 8px; border-left: 4px solid ${gainColor};">
@@ -699,20 +732,33 @@ function updatePortfolioPage(portfolio) {
     });
 
     if (portfolioSector) {
-        portfolioSector.innerHTML = Object.entries(sectors)
-            .sort((a, b) => b[1].value - a[1].value)
-            .map(([sector, data]) => {
-                const percent = ((data.value / totalCurrent) * 100).toFixed(1);
-                return `<div style="margin-bottom: 12px;">
-                    <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px;">
-                        <span>${escapeHtml(sector)} <strong>${data.count}</strong>銘柄</span>
-                        <span style="color: #3B6FD4;"><strong>${percent}%</strong></span>
-                    </div>
-                    <div style="background-color: #EFEDE5; height: 20px; border-radius: 10px; overflow: hidden;">
-                        <div style="background: linear-gradient(90deg, #106B4F, #C9A227); height: 100%; width: ${percent}%;"></div>
-                    </div>
-                </div>`;
-            }).join('');
+        // ドーナツチャート + 凡例
+        const entries = Object.entries(sectors).sort((a, b) => b[1].value - a[1].value);
+        const palette = ['#1E7A4E', '#3D9970', '#63B995', '#8FD0B2', '#2C6E8F', '#5B8DB8', '#C9A76A', '#D6A5A5', '#9AA5B1', '#C4CBC7'];
+        const R = 15.9155; // 円周がちょうど100になる半径
+        let offset = 25;   // 12時の位置から開始
+        const segs = entries.map(([sector, data], i) => {
+            const pct = data.value / totalCurrent * 100;
+            const seg = `<circle r="${R}" cx="21" cy="21" fill="transparent" stroke="${palette[i % palette.length]}" stroke-width="6.5" stroke-dasharray="${pct.toFixed(3)} ${(100 - pct).toFixed(3)}" stroke-dashoffset="${offset.toFixed(3)}"></circle>`;
+            offset -= pct;
+            return seg;
+        }).join('');
+        const legend = entries.map(([sector, data], i) => {
+            const pct = (data.value / totalCurrent * 100).toFixed(1);
+            return `<div class="donut-legend-row">
+                <span class="donut-dot" style="background:${palette[i % palette.length]}"></span>
+                <span class="donut-name">${escapeHtml(sector)}<span style="color: var(--text-sub); font-size: 11.5px;">（${data.count}銘柄）</span></span>
+                <span class="donut-pct">${pct}%</span>
+            </div>`;
+        }).join('');
+        portfolioSector.innerHTML = `
+            <div class="donut-wrap">
+                <div class="donut-chart">
+                    <svg viewBox="0 0 42 42">${segs}</svg>
+                    <div class="donut-center"><span>評価額合計</span><strong>${formatYen(totalCurrent)}</strong></div>
+                </div>
+                <div class="donut-legend">${legend}</div>
+            </div>`;
     }
 
     if (portfolioTbody) {
@@ -761,39 +807,39 @@ function renderHistoryPage() {
     for (let g = 0; g <= 2; g++) {
         const v = min + (max - min) * g / 2;
         const gy = y(v);
-        grid += `<line x1="${P.l}" y1="${gy}" x2="${W - P.r}" y2="${gy}" stroke="#E7E4DA" stroke-width="1"/>`;
-        grid += `<text x="${P.l - 8}" y="${gy + 4}" text-anchor="end" font-size="11" fill="#6F6B60">${(v / 10000).toFixed(0)}万</text>`;
+        grid += `<line x1="${P.l}" y1="${gy}" x2="${W - P.r}" y2="${gy}" stroke="#E5E9E6" stroke-width="1"/>`;
+        grid += `<text x="${P.l - 8}" y="${gy + 4}" text-anchor="end" font-size="11" fill="#6B7280">${(v / 10000).toFixed(0)}万</text>`;
     }
 
     // X軸ラベル（最初・中間・最後）
     let xLabels = '';
     const labelIdx = n <= 2 ? [...Array(n).keys()] : [0, Math.floor((n - 1) / 2), n - 1];
     [...new Set(labelIdx)].forEach(i => {
-        xLabels += `<text x="${x(i)}" y="${H - 12}" text-anchor="middle" font-size="11" fill="#6F6B60">${escapeHtml(history[i].date)}</text>`;
+        xLabels += `<text x="${x(i)}" y="${H - 12}" text-anchor="middle" font-size="11" fill="#6B7280">${escapeHtml(history[i].date)}</text>`;
     });
 
     const currentPoints = history.map((h, i) => `${x(i)},${y(h.currentValue)}`).join(' ');
     const costPoints = history.map((h, i) => `${x(i)},${y(h.totalValue)}`).join(' ');
-    const dots = history.map((h, i) => `<circle cx="${x(i)}" cy="${y(h.currentValue)}" r="4" fill="#0E9F6E"><title>${escapeHtml(h.date)}: ${formatYen(h.currentValue)}</title></circle>`).join('');
+    const dots = history.map((h, i) => `<circle cx="${x(i)}" cy="${y(h.currentValue)}" r="4" fill="#1E7A4E"><title>${escapeHtml(h.date)}: ${formatYen(h.currentValue)}</title></circle>`).join('');
 
     container.innerHTML = `
         <svg viewBox="0 0 ${W} ${H}" style="width: 100%; height: auto;">
             ${grid}
-            <polyline points="${costPoints}" fill="none" stroke="#3B6FD4" stroke-width="2" stroke-dasharray="6 4"/>
-            <polyline points="${currentPoints}" fill="none" stroke="#0E9F6E" stroke-width="2.5"/>
+            <polyline points="${costPoints}" fill="none" stroke="#2C6E8F" stroke-width="2" stroke-dasharray="6 4"/>
+            <polyline points="${currentPoints}" fill="none" stroke="#1E7A4E" stroke-width="2.5"/>
             ${dots}
             ${xLabels}
         </svg>
         <div style="display: flex; gap: 20px; justify-content: center; margin-top: 8px; font-size: 13px; color: var(--text-sub);">
-            <span><span style="display: inline-block; width: 20px; height: 3px; background: #0E9F6E; vertical-align: middle; margin-right: 6px;"></span>評価額</span>
-            <span><span style="display: inline-block; width: 20px; height: 3px; background: #3B6FD4; vertical-align: middle; margin-right: 6px; border-bottom: 1px dashed;"></span>取得総額</span>
+            <span><span style="display: inline-block; width: 20px; height: 3px; background: #1E7A4E; vertical-align: middle; margin-right: 6px;"></span>評価額</span>
+            <span><span style="display: inline-block; width: 20px; height: 3px; background: #2C6E8F; vertical-align: middle; margin-right: 6px; border-bottom: 1px dashed;"></span>取得総額</span>
         </div>
     `;
 
     // 履歴テーブル（新しい順・最大30件）
     if (tableBody) {
         tableBody.innerHTML = [...history].reverse().slice(0, 30).map(h => {
-            const gainColor = h.gainLoss >= 0 ? '#0E9F6E' : '#D94F2B';
+            const gainColor = h.gainLoss >= 0 ? '#1E7A4E' : '#D64545';
             const sign = h.gainLoss >= 0 ? '+' : '-';
             return `<tr>
                 <td>${escapeHtml(h.date)}</td>
@@ -980,7 +1026,7 @@ function updateRecommendationsDisplay() {
             <div class="recommendation-tag">配当利回り ${rec.dividend_yield}%</div>
             <p class="recommendation-reason">${escapeHtml(rec.reason)}</p>
             <div class="recommendation-details">
-                <div class="detail-row"><span>配当利回り</span><span style="color: #B08514;">${rec.dividend_yield}%</span></div>
+                <div class="detail-row"><span>配当利回り</span><span style="color: #1E7A4E;">${rec.dividend_yield}%</span></div>
                 <div class="detail-row"><span>1株配当</span><span>¥${rec.dividend}/年</span></div>
                 <div class="detail-row"><span>株主優待</span><span>${escapeHtml(benefit)}</span></div>
             </div>
@@ -1055,9 +1101,9 @@ function renderDividendPage() {
     const avgYield = totalCurrent > 0 ? (sim.annual / totalCurrent * 100) : 0;
 
     statsEl.innerHTML = `
-        <div class="stat-card"><div><p class="stat-label">年間配当見込み（税引前）</p><p class="stat-value" style="color: #0E9F6E;">${formatYen(sim.annual)}</p></div><div class="stat-icon">💰</div></div>
+        <div class="stat-card"><div><p class="stat-label">年間配当見込み（税引前）</p><p class="stat-value" style="color: #1E7A4E;">${formatYen(sim.annual)}</p></div><div class="stat-icon">💰</div></div>
         <div class="stat-card"><div><p class="stat-label">月あたり平均</p><p class="stat-value">${formatYen(sim.monthly)}</p></div><div class="stat-icon">📅</div></div>
-        <div class="stat-card"><div><p class="stat-label">ポートフォリオ利回り</p><p class="stat-value" style="color: #B08514;">${avgYield.toFixed(2)} %</p></div><div class="stat-icon">📈</div></div>
+        <div class="stat-card"><div><p class="stat-label">ポートフォリオ利回り</p><p class="stat-value" style="color: #1E7A4E;">${avgYield.toFixed(2)} %</p></div><div class="stat-icon">📈</div></div>
     `;
 
     if (breakdownBody) {
@@ -1067,8 +1113,8 @@ function renderDividendPage() {
                 <td><strong>${escapeHtml(b.name)}</strong></td>
                 <td>${b.shares.toLocaleString()} 株</td>
                 <td>¥${b.perShare}/株</td>
-                <td style="color: #B08514;">${b.yield.toFixed(2)}%</td>
-                <td style="font-weight: bold; color: #0E9F6E;">${formatYen(b.annual)}</td>
+                <td style="color: #1E7A4E;">${b.yield.toFixed(2)}%</td>
+                <td style="font-weight: bold; color: #1E7A4E;">${formatYen(b.annual)}</td>
             </tr>`).join('');
     }
 
@@ -1078,8 +1124,8 @@ function renderDividendPage() {
             const width = maxAnnual > 0 ? (p.annual / maxAnnual * 100) : 0;
             return `<div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
                 <span style="width: 48px; font-size: 13px; color: var(--text-sub); text-align: right;">${p.year}年目</span>
-                <div style="flex: 1; background-color: #EFEDE5; height: 24px; border-radius: 6px; overflow: hidden;">
-                    <div style="background: linear-gradient(90deg, #0E9F6E, #3FBF8F); height: 100%; width: ${width}%; display: flex; align-items: center; padding-left: 8px;">
+                <div style="flex: 1; background-color: #EEF1EF; height: 24px; border-radius: 6px; overflow: hidden;">
+                    <div style="background: linear-gradient(90deg, #1E7A4E, #63B995); height: 100%; width: ${width}%; display: flex; align-items: center; padding-left: 8px;">
                         <span style="font-size: 12px; color: white; font-weight: bold; white-space: nowrap;">${formatYen(p.annual)}</span>
                     </div>
                 </div>
@@ -1119,22 +1165,29 @@ function closeModal() {
     document.getElementById('stockDetailModal').style.display = 'none';
 }
 
-// ===== 手動追加モーダル =====
+// ===== 手動追加モーダル（全銘柄検索） =====
+let MANUAL_SELECTED_CODE = null;
+
 function openManualAdd() {
     document.getElementById('modalOverlay').style.display = 'block';
     document.getElementById('manualAddModal').style.display = 'block';
+    MANUAL_SELECTED_CODE = null;
+    const input = document.getElementById('stockSearchInput');
+    if (input) { input.value = ''; input.focus(); }
+    const results = document.getElementById('stockSearchResults');
+    if (results) results.innerHTML = '';
+    const label = document.getElementById('selectedStockLabel');
+    if (label) label.style.display = 'none';
 
-    const select = document.getElementById('manualStockSelect');
-    if (select && select.options.length <= 1) {
-        Object.entries(STOCK_MASTER_DATA)
-            .sort((a, b) => a[0].localeCompare(b[0]))
-            .forEach(([code, data]) => {
-                const opt = document.createElement('option');
-                opt.value = code;
-                opt.textContent = `${code} - ${data.name}（${data.sector}）`;
-                select.appendChild(opt);
-            });
-    }
+    // 全銘柄マスターを読み込み（初回のみ）、対応銘柄数を表示
+    loadFullMaster().then(full => {
+        const countEl = document.getElementById('searchCoverageNote');
+        if (countEl) {
+            countEl.textContent = full
+                ? `全上場銘柄 ${Object.keys(full).length.toLocaleString()}件 に対応（データ: JPX公式リスト）`
+                : `${Object.keys(STOCK_MASTER_DATA).length}銘柄に対応（全銘柄リストは取得できませんでした）`;
+        }
+    });
 }
 
 function closeManualAddModal() {
@@ -1142,21 +1195,95 @@ function closeManualAddModal() {
     document.getElementById('manualAddModal').style.display = 'none';
 }
 
+// 検索: コード前方一致 or 銘柄名部分一致（キュレーション銘柄を優先表示）
+function searchStocks(query) {
+    const q = query.trim();
+    if (!q) return [];
+    const qUpper = q.toUpperCase();
+    const results = [];
+    const seen = new Set();
+
+    const matches = (code, name) =>
+        code.startsWith(qUpper) || name.includes(q) || name.toUpperCase().includes(qUpper);
+
+    // 1) キュレーション済み銘柄（配当データあり）
+    for (const [code, d] of Object.entries(STOCK_MASTER_DATA)) {
+        if (matches(code, d.name)) {
+            results.push({ code, name: d.name, sector: d.sector, curated: true });
+            seen.add(code);
+            if (results.length >= 30) return results;
+        }
+    }
+    // 2) 全銘柄マスター
+    if (FULL_MASTER) {
+        for (const [code, arr] of Object.entries(FULL_MASTER)) {
+            if (seen.has(code)) continue;
+            if (matches(code, arr[0])) {
+                results.push({ code, name: arr[0], sector: arr[1], curated: false });
+                if (results.length >= 30) break;
+            }
+        }
+    }
+    return results;
+}
+
+function renderStockSearch() {
+    const input = document.getElementById('stockSearchInput');
+    const container = document.getElementById('stockSearchResults');
+    if (!input || !container) return;
+
+    MANUAL_SELECTED_CODE = null;
+    const label = document.getElementById('selectedStockLabel');
+    if (label) label.style.display = 'none';
+
+    const results = searchStocks(input.value);
+    if (input.value.trim() === '') { container.innerHTML = ''; return; }
+
+    if (results.length === 0) {
+        container.innerHTML = '<p style="padding: 10px; color: var(--text-sub); font-size: 13px;">該当する銘柄が見つかりません</p>';
+        return;
+    }
+
+    container.innerHTML = results.map(r => `
+        <div class="stock-search-item" onclick="selectSearchStock('${escapeHtml(r.code)}')">
+            <span class="stock-search-code">${escapeHtml(r.code)}</span>
+            <span class="stock-search-name">${escapeHtml(r.name)}</span>
+            <span class="stock-search-sector">${escapeHtml(r.sector)}${r.curated ? ' ・配当データあり' : ''}</span>
+        </div>
+    `).join('');
+}
+
+function selectSearchStock(code) {
+    MANUAL_SELECTED_CODE = code;
+    const info = getMasterInfo(code);
+    const label = document.getElementById('selectedStockLabel');
+    if (label && info) {
+        label.innerHTML = `✅ <strong>${escapeHtml(code)} ${escapeHtml(info.name)}</strong>（${escapeHtml(info.sector)}）を選択中`;
+        label.style.display = 'block';
+    }
+    const container = document.getElementById('stockSearchResults');
+    if (container) container.innerHTML = '';
+    const input = document.getElementById('stockSearchInput');
+    if (input && info) input.value = `${code} ${info.name}`;
+    const shares = document.getElementById('manualShares');
+    if (shares) shares.focus();
+}
+
 async function submitManualAdd() {
-    const codeInput = document.getElementById('manualCodeInput').value.trim();
-    const selectValue = document.getElementById('manualStockSelect').value;
+    const rawQuery = (document.getElementById('stockSearchInput')?.value || '').trim().toUpperCase();
     const shares = parseInt(document.getElementById('manualShares').value, 10);
     const price = parseFloat(document.getElementById('manualPrice').value);
 
-    const code = codeInput || selectValue;
-    if (!code) { alert('銘柄を選択するか、銘柄コードを入力してください'); return; }
-    if (codeInput && !/^\d{4}$/.test(codeInput)) { alert('銘柄コードは4桁の数字で入力してください'); return; }
+    // 選択済みコード、なければ入力欄が4文字コードそのものならそれを使用
+    let code = MANUAL_SELECTED_CODE;
+    if (!code && /^\d[\dA-Z]{3}$/.test(rawQuery)) code = rawQuery;
+    if (!code) { alert('検索結果から銘柄を選択してください'); return; }
     if (!shares || shares <= 0) { alert('株数を入力してください'); return; }
     if (!price || price <= 0) { alert('取得単価を入力してください'); return; }
 
     let nameOverride = null;
-    if (!STOCK_MASTER_DATA[code]) {
-        // マスターにない銘柄：Yahoo Financeから名称を取得
+    if (!getMasterInfo(code)) {
+        // どのマスターにもない銘柄：Yahoo Financeから名称を取得（ローカルのみ動作）
         try {
             const quote = await fetchQuote(code);
             nameOverride = quote.name || `銘柄${code}`;
@@ -1170,7 +1297,6 @@ async function submitManualAdd() {
     closeManualAddModal();
     document.getElementById('manualShares').value = '';
     document.getElementById('manualPrice').value = '';
-    document.getElementById('manualCodeInput').value = '';
     switchPage('dashboard');
     refreshPrices(true);
 }
@@ -1178,6 +1304,7 @@ async function submitManualAdd() {
 // ===== ポートフォリオ操作 =====
 function addStockToPortfolio(code, shares, price, nameOverride = null) {
     const master = STOCK_MASTER_DATA[code] || {};
+    const info = getMasterInfo(code); // キュレーション → 全銘柄マスターの順で名称・セクター解決
     const portfolio = getPortfolio();
 
     const existing = portfolio.find(s => s.code === code);
@@ -1188,8 +1315,8 @@ function addStockToPortfolio(code, shares, price, nameOverride = null) {
     } else {
         portfolio.push({
             code,
-            name: nameOverride || master.name || `銘柄${code}`,
-            sector: master.sector || 'その他',
+            name: nameOverride || (info && info.name) || `銘柄${code}`,
+            sector: (info && info.sector) || 'その他',
             shares,
             acquisitionPrice: price,
             currentPrice: price,
@@ -1554,7 +1681,7 @@ function displayOCRResults(stocks) {
 
     stocks.forEach((stock, index) => {
         const confidenceText = { high: '高 ✓', middle: '中 △', low: '低 ⚠️' }[stock.confidence] || '不明';
-        const confidenceColor = { high: '#0E9F6E', middle: '#E09112', low: '#D94F2B' }[stock.confidence] || '#999';
+        const confidenceColor = { high: '#1E7A4E', middle: '#E09112', low: '#D64545' }[stock.confidence] || '#999';
 
         html += `
             <div class="ocr-result-item" style="text-align: left;">
@@ -1793,4 +1920,5 @@ document.addEventListener('DOMContentLoaded', function () {
     updateChatSettingsUI();
     updateDashboard();
     refreshPrices(); // 起動時に株価を自動取得（5分キャッシュ）
+    loadFullMaster(); // 全銘柄マスターを先読み（検索用・非同期）
 });

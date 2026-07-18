@@ -3,3 +3,6 @@ index (3).html
 test_ocr.html
 features.js
 .claude/
+node_modules/
+package.json
+package-lock.json

@@ -6,8 +6,8 @@
     <title>カブスコープ - 株チェックAI</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@500;700;900&family=Noto+Sans+JP:wght@400;500;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css?v=3">
     <script async src="https://cdn.jsdelivr.net/npm/tesseract.js@v5.0.4/dist/tesseract.min.js"></script>
 </head>
 <body>
@@ -369,12 +369,12 @@
         </div>
         <div class="modal-body">
             <div class="stock-detail-section">
-                <h3>銘柄を選択</h3>
-                <select id="manualStockSelect" style="width: 100%; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 15px;">
-                    <option value="">-- 銘柄を選択してください --</option>
-                </select>
-                <p style="font-size: 13px; color: var(--text-sub); margin: 12px 0 8px 0;">リストにない銘柄は、証券コード（4桁）を直接入力できます。名称・株価は自動取得されます。</p>
-                <input type="text" id="manualCodeInput" maxlength="4" placeholder="例: 6501（リストにない銘柄のコード）" style="width: 100%; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 15px;">
+                <h3>銘柄を検索</h3>
+                <input type="text" id="stockSearchInput" placeholder="銘柄名またはコードで検索（例: トヨタ / 7203）" autocomplete="off" oninput="renderStockSearch()"
+                       style="width: 100%; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 15px;">
+                <div id="stockSearchResults" class="stock-search-results"></div>
+                <p id="selectedStockLabel" style="display: none; margin: 10px 0 0 0; padding: 10px 12px; background-color: var(--primary-light); border-radius: 8px; font-size: 14px;"></p>
+                <p id="searchCoverageNote" style="font-size: 12px; color: var(--text-sub); margin: 10px 0 0 0;"></p>
             </div>
             <div class="stock-detail-section">
                 <h3>保有情報</h3>
@@ -395,6 +395,6 @@
             <button class="btn btn-primary" onclick="submitManualAdd()">✓ 追加する</button>
         </div>
     </div>
-    <script src="main.js"></script>
+    <script src="main.js?v=3"></script>
 </body>
 </html>

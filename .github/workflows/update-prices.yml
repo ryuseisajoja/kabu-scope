@@ -2,10 +2,16 @@ name: 株価スナップショット更新
 
 on:
   schedule:
-    # 東証の取引時間帯（JST 9:00-15:45 ≒ UTC 0:00-6:45）に30分ごと + 引け後1回
+    # 人気銘柄: 東証の取引時間帯（JST 9:00-15:45 ≒ UTC 0:00-6:45）に30分ごと
     - cron: '*/30 0-6 * * 1-5'
-    - cron: '0 7 * * 1-5'
-  workflow_dispatch: {}
+    # 全銘柄 + マスター更新: 引け後 JST 16:15 (UTC 7:15) に1日1回
+    - cron: '15 7 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      full:
+        description: '全銘柄モードで実行（master.json更新 + prices_all.json）'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -17,6 +23,7 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -24,17 +31,38 @@ jobs:
         with:
           node-version: 20
 
-      - name: 株価を取得
+      - name: モード判定
+        id: mode
+        run: |
+          if [ "${{ github.event.schedule }}" = "15 7 * * 1-5" ] || [ "${{ inputs.full }}" = "true" ]; then
+            echo "full=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "full=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 人気銘柄の株価を取得
         run: node scripts/fetch_prices.mjs
+
+      - name: 全銘柄マスターを更新（JPX公式リスト）
+        if: steps.mode.outputs.full == 'true'
+        run: |
+          npm install xlsx --no-save --silent
+          node scripts/fetch_master.mjs
+
+      - name: 全銘柄の株価を取得
+        if: steps.mode.outputs.full == 'true'
+        run: node scripts/fetch_prices.mjs --all
 
       - name: 変更があればコミット
         run: |
-          if git diff --quiet prices.json 2>/dev/null && [ -f prices.json ]; then
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add prices.json master.json prices_all.json 2>/dev/null || git add prices.json
+          if git diff --cached --quiet; then
             echo "変更なし"
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add prices.json
-          git commit -m "chore: 株価スナップショット更新 [skip ci]" || echo "変更なし"
+          git commit -m "chore: 株価スナップショット更新 [skip ci]"
+          # 30分ごとの実行と競合した場合に備えてリベースしてからプッシュ
+          git pull --rebase origin main || true
           git push
