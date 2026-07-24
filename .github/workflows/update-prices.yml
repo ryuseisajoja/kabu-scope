@@ -53,11 +53,15 @@ jobs:
         if: steps.mode.outputs.full == 'true'
         run: node scripts/fetch_prices.mjs --all
 
+      - name: 全銘柄の配当データを取得
+        if: steps.mode.outputs.full == 'true'
+        run: node scripts/fetch_dividends.mjs
+
       - name: 変更があればコミット
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add prices.json master.json prices_all.json 2>/dev/null || git add prices.json
+          git add prices.json master.json prices_all.json dividends.json 2>/dev/null || git add prices.json
           if git diff --cached --quiet; then
             echo "変更なし"
             exit 0

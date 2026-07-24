@@ -31,10 +31,18 @@
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: var(--font-body); }
 body { background-color: var(--bg-color); color: var(--text-main); display: flex; min-height: 100vh; }
 
+/* ===== アイコン（インラインSVG） ===== */
+.icon { width: 18px; height: 18px; flex-shrink: 0; }
+.btn .icon { width: 16px; height: 16px; }
+.plain-list { list-style: none; padding-left: 0; }
+.plain-list li { padding: 4px 0 4px 14px; position: relative; }
+.plain-list li::before { content: ""; position: absolute; left: 0; top: 50%; width: 6px; height: 2px; background-color: var(--primary-color); }
+
 /* ===== サイドバー（白） ===== */
 .sidebar { width: 248px; background-color: var(--card-bg); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; position: fixed; top: 0; bottom: 0; left: 0; z-index: 100; }
 .logo-area { padding: 24px 20px; display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 900; color: var(--text-main); border-bottom: 1px solid var(--border-color); letter-spacing: 0.02em; }
-.logo-icon { width: 34px; height: 34px; background-color: var(--primary-color); color: white; display: flex; align-items: center; justify-content: center; border-radius: 8px; font-size: 17px; }
+.logo-icon { width: 34px; height: 34px; background-color: var(--primary-color); color: white; display: flex; align-items: center; justify-content: center; border-radius: 8px; }
+.logo-icon svg { width: 19px; height: 19px; }
 .nav-links { list-style: none; padding: 16px 12px; display: flex; flex-direction: column; gap: 2px; flex-grow: 1; overflow-y: auto; }
 .nav-item { display: flex; align-items: center; gap: 10px; padding: 11px 14px; color: var(--text-sub); border-radius: 8px; font-weight: 500; font-size: 14px; cursor: pointer; transition: all 0.15s; }
 .nav-item:hover { background-color: #F2F5F3; color: var(--text-main); }
@@ -57,7 +65,8 @@ body { background-color: var(--bg-color); color: var(--text-main); display: flex
 .stat-card { background-color: var(--card-bg); border-radius: 12px; padding: 22px; border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
 .stat-label { font-size: 12.5px; color: var(--text-sub); margin-bottom: 8px; }
 .stat-value { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
-.stat-icon { width: 44px; height: 44px; border-radius: 10px; background-color: var(--primary-light); color: var(--primary-color); display: flex; align-items: center; justify-content: center; font-size: 19px; }
+.stat-icon { width: 44px; height: 44px; border-radius: 10px; background-color: var(--primary-light); color: var(--primary-color); display: flex; align-items: center; justify-content: center; }
+.stat-icon .icon { width: 20px; height: 20px; }
 
 /* ===== ボタン ===== */
 .btn-group { display: flex; gap: 10px; margin-bottom: 28px; flex-wrap: wrap; }
@@ -100,6 +109,11 @@ body { background-color: var(--bg-color); color: var(--text-main); display: flex
 .diagnostic-list { display: flex; flex-direction: column; gap: 14px; }
 .diagnostic-item { background-color: #FAFBFA; border: 1px solid var(--border-color); border-radius: 10px; padding: 14px 16px; }
 .diagnostic-title { font-weight: 700; margin-bottom: 5px; display: flex; align-items: center; gap: 8px; font-size: 14.5px; }
+.diag-chip { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 20px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; flex-shrink: 0; }
+.diag-chip.diag-alert { background-color: #FBEAEA; color: var(--loss); }
+.diag-chip.diag-warn { background-color: #FBF3E3; color: var(--warn); }
+.diag-chip.diag-ok { background-color: var(--primary-light); color: var(--primary-color); }
+.diag-chip.diag-info { background-color: var(--accent-blue-light); color: var(--accent-blue); }
 
 /* ===== ガイド ===== */
 .guide-tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--border-color); margin-bottom: 22px; overflow-x: auto; white-space: nowrap; }
@@ -116,7 +130,7 @@ body { background-color: var(--bg-color); color: var(--text-main); display: flex
 .bottom-nav { display: none; position: fixed; bottom: 0; left: 0; right: 0; background-color: var(--card-bg); border-top: 1px solid var(--border-color); justify-content: space-around; padding: 8px 0 10px; z-index: 100; }
 .bottom-nav-item { display: flex; flex-direction: column; align-items: center; font-size: 10.5px; color: var(--text-sub); cursor: pointer; gap: 3px; }
 .bottom-nav-item.active { color: var(--primary-color); font-weight: 700; }
-.bottom-nav-icon { font-size: 19px; }
+.bottom-nav-icon svg { width: 20px; height: 20px; display: block; }
 
 /* ===== 推奨銘柄 ===== */
 .recommendation-banner { background-color: var(--primary-light); border-radius: 12px; padding: 20px 22px; margin-bottom: 20px; display: flex; gap: 16px; align-items: flex-start; }
@@ -144,7 +158,10 @@ body { background-color: var(--bg-color); color: var(--text-main); display: flex
 .chat-history { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
 .chat-message { display: flex; gap: 10px; animation: slideIn 0.25s ease; }
 @keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-.message-avatar { font-size: 22px; flex-shrink: 0; }
+.message-avatar { width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.message-avatar .icon { width: 16px; height: 16px; }
+.avatar-ai { background-color: var(--primary-color); color: white; }
+.avatar-user { background-color: #E4E8E6; color: var(--text-sub); }
 .user-message { justify-content: flex-end; }
 .user-message .message-avatar { order: 2; }
 .user-message .message-content { order: 1; }

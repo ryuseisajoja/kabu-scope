@@ -398,6 +398,46 @@ const BENEFIT_DATA = {
     '3088': '買物優待割引（100株～）'
 };
 
+// ===== セクター分類（厳選データ・全銘柄マスター・診断で共通利用） =====
+// 表示順は診断のディフェンシブ判定やドーナツ配色の安定化にも使う。
+const CANONICAL_SECTORS = [
+    '自動車', '電機', '精密', '機械', '化学', '鉄鋼', '医薬', '食品',
+    '小売', '外食', 'サービス', '商社', '金融', '不動産', '建設',
+    '運輸', 'インフラ', 'エネルギー', '通信', 'IT', 'その他', 'ETF', 'REIT'
+];
+
+// データ源による表記ゆれを正規化（全銘柄マスターのJPX由来表記 → アプリの正規名）
+const SECTOR_ALIASES = {
+    '情報通信': 'IT', '情報・通信業': 'IT', '情報・通信': 'IT', 'テクノロジー': 'IT',
+    '飲食': '外食', '飲食店': '外食',
+    '輸送用機器': '自動車', '電気機器': '電機', '精密機器': '精密',
+    '電気・ガス業': 'インフラ', '石油・石炭製品': 'エネルギー', '鉱業': 'エネルギー',
+    '卸売業': '商社', '小売業': '小売', '銀行業': '金融', '不動産業': '不動産',
+    '建設業': '建設', 'サービス業': 'サービス'
+};
+
+function normalizeSector(sector) {
+    if (!sector) return 'その他';
+    const s = String(sector).trim();
+    if (CANONICAL_SECTORS.includes(s)) return s;
+    return SECTOR_ALIASES[s] || s;
+}
+
+// セクター固定色（保有内容が変わっても同じセクターは同じ色になるようにする）
+const SECTOR_COLORS = {
+    '自動車': '#1E7A4E', '電機': '#3D9970', '精密': '#63B995', '機械': '#8FD0B2',
+    '化学': '#2C6E8F', '鉄鋼': '#5B8DB8', '医薬': '#C9A76A', '食品': '#7FA650',
+    '小売': '#D6A5A5', '外食': '#D98E5A', 'サービス': '#9AA5B1', '商社': '#B08968',
+    '金融': '#4C6EA5', '不動産': '#A56EA5', '建設': '#8A8D5B', '運輸': '#5AA3A3',
+    'インフラ': '#6B8E9E', 'エネルギー': '#C4894A', '通信': '#5B7DB1', 'IT': '#4A9D8E',
+    'その他': '#C4CBC7', 'ETF': '#9AA5B1', 'REIT': '#B8A57A'
+};
+const SECTOR_FALLBACK_PALETTE = ['#1E7A4E', '#3D9970', '#63B995', '#8FD0B2', '#2C6E8F', '#5B8DB8', '#C9A76A', '#D6A5A5', '#9AA5B1', '#C4CBC7'];
+
+function sectorColor(sector, index = 0) {
+    return SECTOR_COLORS[normalizeSector(sector)] || SECTOR_FALLBACK_PALETTE[index % SECTOR_FALLBACK_PALETTE.length];
+}
+
 // ===== ユーティリティ =====
 function getPortfolio() {
     return JSON.parse(localStorage.getItem('portfolio') || '[]');
@@ -476,11 +516,42 @@ async function loadFullMaster() {
 // コードから銘柄情報を取得（キュレーション済みマスター優先 → 全銘柄マスター）
 function getMasterInfo(code) {
     const m = STOCK_MASTER_DATA[code];
-    if (m) return { name: m.name, sector: m.sector, curated: true };
+    if (m) return { name: m.name, sector: normalizeSector(m.sector), curated: true };
     if (FULL_MASTER && FULL_MASTER[code]) {
-        return { name: FULL_MASTER[code][0], sector: FULL_MASTER[code][1], curated: false };
+        return { name: FULL_MASTER[code][0], sector: normalizeSector(FULL_MASTER[code][1]), curated: false };
     }
     return null;
+}
+
+// 全銘柄の配当データ（GitHub Actionsが週次更新）
+// 形式: { "7203": { d: 1株配当, y: 利回り% }, ... }
+let FULL_DIVIDENDS = null;
+async function loadDividends() {
+    if (FULL_DIVIDENDS !== null) return FULL_DIVIDENDS;
+    try {
+        const res = await fetch('dividends.json?t=' + Math.floor(Date.now() / 3600000));
+        FULL_DIVIDENDS = res.ok ? (await res.json()).dividends : false;
+    } catch (e) {
+        FULL_DIVIDENDS = false;
+    }
+    return FULL_DIVIDENDS;
+}
+
+// コードから配当情報を取得（厳選データ優先 → 全銘柄配当データ）
+// 戻り値: { perShare: 1株配当(円), yield: 利回り(%), source: 'curated'|'auto'|'none' }
+function getDividendInfo(code, currentPrice) {
+    const curated = STOCK_MASTER_DATA[code];
+    if (curated && curated.dividend !== undefined) {
+        const perShare = curated.dividend;
+        const y = currentPrice > 0 ? (perShare / currentPrice * 100) : (curated.dividend_yield || 0);
+        return { perShare, yield: y, source: 'curated' };
+    }
+    if (FULL_DIVIDENDS && FULL_DIVIDENDS[code]) {
+        const d = FULL_DIVIDENDS[code];
+        const y = currentPrice > 0 ? (d.d / currentPrice * 100) : d.y;
+        return { perShare: d.d, yield: y, source: 'auto' };
+    }
+    return { perShare: 0, yield: 0, source: 'none' };
 }
 
 // 複数銘柄の株価を取得（5分キャッシュ → Yahoo直接 → スナップショットの順）
@@ -546,6 +617,11 @@ async function fetchRealTimePrices(codes, force = false) {
 }
 
 // ポートフォリオ全銘柄の現在値を更新
+function setRefreshBtnLabel(text) {
+    const label = document.getElementById('refreshPricesLabel');
+    if (label) label.textContent = text;
+}
+
 let PRICE_REFRESHING = false;
 async function refreshPrices(force = false) {
     if (PRICE_REFRESHING) return;
@@ -555,7 +631,7 @@ async function refreshPrices(force = false) {
     PRICE_REFRESHING = true;
     const btn = document.getElementById('refreshPricesBtn');
     const statusEl = document.getElementById('priceUpdatedAt');
-    if (btn) { btn.disabled = true; btn.textContent = '🔄 更新中...'; }
+    if (btn) { btn.disabled = true; setRefreshBtnLabel('更新中...'); }
 
     try {
         const prices = await fetchRealTimePrices(portfolio.map(s => s.code), force);
@@ -579,19 +655,19 @@ async function refreshPrices(force = false) {
 
         if (statusEl) {
             if (updated === 0) {
-                statusEl.textContent = '⚠️ 株価を取得できませんでした（オフライン？）';
+                statusEl.textContent = '株価を取得できませんでした（オフラインの可能性があります）';
             } else if (snapshotTime) {
-                statusEl.textContent = `📡 株価更新（${new Date(snapshotTime).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}時点のデータ・${updated}/${portfolio.length}銘柄）`;
+                statusEl.textContent = `株価更新（${new Date(snapshotTime).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}時点のデータ・${updated}/${portfolio.length}銘柄）`;
             } else {
-                statusEl.textContent = `📡 株価更新: ${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}（${updated}/${portfolio.length}銘柄）`;
+                statusEl.textContent = `株価更新: ${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}（${updated}/${portfolio.length}銘柄）`;
             }
         }
     } catch (e) {
         console.error('price refresh error:', e);
-        if (statusEl) statusEl.textContent = '⚠️ 株価の取得に失敗しました';
+        if (statusEl) statusEl.textContent = '株価の取得に失敗しました';
     } finally {
         PRICE_REFRESHING = false;
-        if (btn) { btn.disabled = false; btn.textContent = '🔄 株価を更新'; }
+        if (btn) { btn.disabled = false; setRefreshBtnLabel('株価を更新'); }
     }
 }
 
@@ -678,7 +754,7 @@ function updateStockTable(portfolio) {
             <td>${formatYen(stock.currentPrice)} ${changeHtml}</td>
             <td style="color: ${gainColor}; font-weight: bold;">${gainSign}${formatYen(Math.abs(gain))}</td>
             <td style="text-align: center;">
-                <button style="background: none; border: none; cursor: pointer; color: #D64545; font-size: 16px;" onclick="removeStockFromPortfolio('${escapeHtml(stock.code)}')" title="削除">🗑️</button>
+                <button style="background: none; border: none; cursor: pointer; color: var(--text-sub); display: inline-flex; align-items: center;" onclick="removeStockFromPortfolio('${escapeHtml(stock.code)}')" title="削除"><svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
             </td>
         </tr>`;
     }).join('');
@@ -725,28 +801,27 @@ function updatePortfolioPage(portfolio) {
 
     const sectors = {};
     portfolio.forEach(stock => {
-        const sector = stock.sector || '不明';
+        const sector = normalizeSector(stock.sector || '不明');
         if (!sectors[sector]) sectors[sector] = { value: 0, count: 0 };
         sectors[sector].value += stock.currentPrice * stock.shares;
         sectors[sector].count += 1;
     });
 
     if (portfolioSector) {
-        // ドーナツチャート + 凡例
+        // ドーナツチャート + 凡例（セクター固定色で保有変化に影響されない配色）
         const entries = Object.entries(sectors).sort((a, b) => b[1].value - a[1].value);
-        const palette = ['#1E7A4E', '#3D9970', '#63B995', '#8FD0B2', '#2C6E8F', '#5B8DB8', '#C9A76A', '#D6A5A5', '#9AA5B1', '#C4CBC7'];
         const R = 15.9155; // 円周がちょうど100になる半径
         let offset = 25;   // 12時の位置から開始
         const segs = entries.map(([sector, data], i) => {
             const pct = data.value / totalCurrent * 100;
-            const seg = `<circle r="${R}" cx="21" cy="21" fill="transparent" stroke="${palette[i % palette.length]}" stroke-width="6.5" stroke-dasharray="${pct.toFixed(3)} ${(100 - pct).toFixed(3)}" stroke-dashoffset="${offset.toFixed(3)}"></circle>`;
+            const seg = `<circle r="${R}" cx="21" cy="21" fill="transparent" stroke="${sectorColor(sector, i)}" stroke-width="6.5" stroke-dasharray="${pct.toFixed(3)} ${(100 - pct).toFixed(3)}" stroke-dashoffset="${offset.toFixed(3)}"></circle>`;
             offset -= pct;
             return seg;
         }).join('');
         const legend = entries.map(([sector, data], i) => {
             const pct = (data.value / totalCurrent * 100).toFixed(1);
             return `<div class="donut-legend-row">
-                <span class="donut-dot" style="background:${palette[i % palette.length]}"></span>
+                <span class="donut-dot" style="background:${sectorColor(sector, i)}"></span>
                 <span class="donut-name">${escapeHtml(sector)}<span style="color: var(--text-sub); font-size: 11.5px;">（${data.count}銘柄）</span></span>
                 <span class="donut-pct">${pct}%</span>
             </div>`;
@@ -865,7 +940,7 @@ function updateAIAnalysis() {
     if (portfolio.length === 0) {
         scoreBadge.textContent = '-';
         if (scoreTitle) scoreTitle.textContent = '銘柄を追加すると診断が始まります';
-        diagnosticList.innerHTML = `<div class="diagnostic-item"><div class="diagnostic-title">📋 データ不足</div><p style="color: var(--text-sub); font-size: 14px;">ダッシュボードから保有銘柄を追加してください。スクショからの自動読み取りにも対応しています。</p></div>`;
+        diagnosticList.innerHTML = `<div class="diagnostic-item"><div class="diagnostic-title">データ不足</div><p style="color: var(--text-sub); font-size: 14px;">ダッシュボードから保有銘柄を追加してください。スクショからの自動読み取りにも対応しています。</p></div>`;
         return;
     }
 
@@ -879,52 +954,67 @@ function updateAIAnalysis() {
     const topConcentration = (topStock.currentPrice * topStock.shares) / totalValue * 100;
     if (topConcentration > 50) {
         score -= 30;
-        findings.push({ icon: '🚨', title: '高い集中リスク', text: `${topStock.name}が全体の${topConcentration.toFixed(1)}%を占めています。1銘柄の急落が資産全体に大きく影響します。分散を強くおすすめします。` });
+        findings.push({ tone: 'alert', title: '高い集中リスク', text: `${topStock.name}が全体の${topConcentration.toFixed(1)}%を占めています。1銘柄の急落が資産全体に大きく影響します。分散を強くおすすめします。` });
     } else if (topConcentration > 30) {
         score -= 15;
-        findings.push({ icon: '⚠️', title: '集中リスク', text: `${topStock.name}への投資比率が${topConcentration.toFixed(1)}%とやや高めです。1銘柄への集中はリスクを高めます。` });
+        findings.push({ tone: 'warn', title: '集中リスク', text: `${topStock.name}への投資比率が${topConcentration.toFixed(1)}%とやや高めです。1銘柄への集中はリスクを高めます。` });
     } else {
-        findings.push({ icon: '✅', title: '集中度は良好', text: `最大銘柄の比率は${topConcentration.toFixed(1)}%。1銘柄への過度な集中はありません。` });
+        findings.push({ tone: 'ok', title: '集中度は良好', text: `最大銘柄の比率は${topConcentration.toFixed(1)}%。1銘柄への過度な集中はありません。` });
     }
 
     // 2. 銘柄数チェック
     if (portfolio.length < 3) {
         score -= 15;
-        findings.push({ icon: '💡', title: '銘柄数が少なめ', text: `現在${portfolio.length}銘柄です。5銘柄以上に分散すると、個別企業のリスクを抑えられます。` });
+        findings.push({ tone: 'info', title: '銘柄数が少なめ', text: `現在${portfolio.length}銘柄です。5銘柄以上に分散すると、個別企業のリスクを抑えられます。` });
     } else if (portfolio.length < 5) {
         score -= 5;
-        findings.push({ icon: '💡', title: 'もう少し分散の余地あり', text: `現在${portfolio.length}銘柄。5〜10銘柄程度が初心者にも管理しやすい分散の目安です。` });
+        findings.push({ tone: 'info', title: 'もう少し分散の余地あり', text: `現在${portfolio.length}銘柄。5〜10銘柄程度が初心者にも管理しやすい分散の目安です。` });
     }
 
     // 3. セクター分散チェック
     const sectors = {};
     portfolio.forEach(s => {
-        const sec = s.sector || '不明';
+        const sec = normalizeSector(s.sector || '不明');
         sectors[sec] = (sectors[sec] || 0) + s.currentPrice * s.shares;
     });
     const sectorEntries = Object.entries(sectors).sort((a, b) => b[1] - a[1]);
     const topSectorPercent = sectorEntries[0][1] / totalValue * 100;
     if (topSectorPercent > 60 && sectorEntries[0][0] !== 'ETF') {
         score -= 20;
-        findings.push({ icon: '⚠️', title: 'セクターの偏り', text: `${sectorEntries[0][0]}セクターが${topSectorPercent.toFixed(1)}%を占めています。業界全体の不況に弱いポートフォリオです。` });
+        findings.push({ tone: 'warn', title: 'セクターの偏り', text: `${sectorEntries[0][0]}セクターが${topSectorPercent.toFixed(1)}%を占めています。業界全体の不況に弱いポートフォリオです。` });
     } else if (Object.keys(sectors).length < 3 && portfolio.length >= 3) {
         score -= 10;
-        findings.push({ icon: '💡', title: 'セクター数が少なめ', text: `現在${Object.keys(sectors).length}セクターのみ。異なる業種を組み合わせると景気変動に強くなります。` });
+        findings.push({ tone: 'info', title: 'セクター数が少なめ', text: `現在${Object.keys(sectors).length}セクターのみ。異なる業種を組み合わせると景気変動に強くなります。` });
     }
 
     // 4. ディフェンシブ銘柄チェック
     const defensiveSectors = ['食品', '医薬', 'インフラ', '通信'];
-    const hasDefensive = portfolio.some(s => defensiveSectors.includes(s.sector));
-    const hasETF = portfolio.some(s => s.sector === 'ETF');
+    const hasDefensive = portfolio.some(s => defensiveSectors.includes(normalizeSector(s.sector)));
+    const hasETF = portfolio.some(s => normalizeSector(s.sector) === 'ETF');
     if (!hasDefensive && !hasETF) {
         score -= 10;
-        findings.push({ icon: '💡', title: '足りない視点', text: '食品・医薬・通信・インフラなどディフェンシブ性の高いセクターがありません。景気後退時の下支えになります。' });
+        findings.push({ tone: 'info', title: '足りない視点', text: '食品・医薬・通信・インフラなどディフェンシブ性の高いセクターがありません。景気後退時の下支えになります。' });
     }
 
     // 5. 配当チェック
     const div = simulateDividendIncome(1);
+    const portfolioYield = totalValue > 0 ? (div.annual / totalValue * 100) : 0;
     if (div.annual > 0) {
-        findings.push({ icon: '💰', title: '配当収入の見込み', text: `年間配当見込みは約${formatYen(div.annual)}（月あたり約${formatYen(div.monthly)}）です。詳しくは「配当予測」ページへ。` });
+        findings.push({ tone: 'ok', title: '配当収入の見込み', text: `年間配当見込みは約${formatYen(div.annual)}（月あたり約${formatYen(div.monthly)}）、ポートフォリオ利回りは約${portfolioYield.toFixed(2)}%です。詳しくは「配当予測」ページへ。` });
+    }
+
+    // 6. 配当利回りの水準チェック（全銘柄の配当データを活用）
+    // 東証プライムの平均配当利回りはおおむね2%前後。それを基準に評価する。
+    const noDivCount = portfolio.filter(s => getDividendInfo(s.code, s.currentPrice).perShare <= 0 && normalizeSector(s.sector) !== 'ETF').length;
+    if (div.annual === 0 && portfolio.length > 0) {
+        findings.push({ tone: 'info', title: '配当を受け取れる銘柄がありません', text: '保有銘柄はいずれも配当が確認できません。成長重視の構成ですが、配当のある銘柄を加えると定期的な収入源になります。' });
+    } else if (portfolioYield >= 3.5) {
+        findings.push({ tone: 'ok', title: '高めの配当利回り', text: `ポートフォリオ利回り約${portfolioYield.toFixed(2)}%は市場平均（約2%）を上回ります。インカム重視の良い構成です。ただし利回りが極端に高い銘柄は減配リスクにも注意しましょう。` });
+    } else if (portfolioYield > 0 && portfolioYield < 1.5) {
+        findings.push({ tone: 'info', title: '配当利回りは控えめ', text: `ポートフォリオ利回りは約${portfolioYield.toFixed(2)}%で市場平均（約2%）を下回ります。成長株中心の構成です。配当収入も重視するなら高配当銘柄の追加を検討できます。` });
+    }
+    if (noDivCount > 0 && div.annual > 0) {
+        findings.push({ tone: 'info', title: `無配の銘柄が${noDivCount}件`, text: '配当が確認できない銘柄があります。成長期待で保有する分には問題ありませんが、配当目的なら見直しの余地があります。' });
     }
 
     let grade, title;
@@ -937,9 +1027,10 @@ function updateAIAnalysis() {
     scoreBadge.textContent = grade;
     if (scoreTitle) scoreTitle.textContent = title;
 
+    const toneLabels = { alert: '警告', warn: '注意', ok: '良好', info: 'ヒント' };
     diagnosticList.innerHTML = findings.map(f => `
         <div class="diagnostic-item">
-            <div class="diagnostic-title">${f.icon} ${escapeHtml(f.title)}</div>
+            <div class="diagnostic-title"><span class="diag-chip diag-${f.tone}">${toneLabels[f.tone] || ''}</span>${escapeHtml(f.title)}</div>
             <p style="color: var(--text-sub); font-size: 14px;">${escapeHtml(f.text)}</p>
         </div>
     `).join('');
@@ -952,7 +1043,7 @@ function generateDynamicRecommendations() {
     if (portfolio.length === 0) return getDefaultRecommendations();
 
     const heldCodes = new Set(portfolio.map(s => s.code));
-    const heldSectors = new Set(portfolio.map(s => s.sector));
+    const heldSectors = new Set(portfolio.map(s => normalizeSector(s.sector)));
     const recommendations = [];
 
     const targetSectors = ['食品', '医薬', '通信', 'インフラ', '小売', '金融', '運輸', '商社'];
@@ -960,7 +1051,7 @@ function generateDynamicRecommendations() {
         if (recommendations.length >= 3) break;
         if (heldSectors.has(sector)) continue;
         const candidates = Object.entries(STOCK_MASTER_DATA)
-            .filter(([code, d]) => d.sector === sector && !heldCodes.has(code) && !d.isETF)
+            .filter(([code, d]) => normalizeSector(d.sector) === sector && !heldCodes.has(code) && !d.isETF)
             .sort((a, b) => b[1].dividend_yield - a[1].dividend_yield);
         if (candidates.length > 0) {
             const [code, data] = candidates[0];
@@ -1020,7 +1111,7 @@ function updateRecommendationsDisplay() {
         <div class="recommendation-card">
             <div class="recommendation-header">
                 <div class="stock-code-badge">${rec.code}</div>
-                <div class="recommendation-rating">⭐ 初心者向け</div>
+                <div class="recommendation-rating">初心者向け</div>
             </div>
             <h4>${escapeHtml(rec.name)}</h4>
             <div class="recommendation-tag">配当利回り ${rec.dividend_yield}%</div>
@@ -1049,8 +1140,8 @@ function simulateDividendIncome(years = 1) {
     const projection = [];
 
     portfolio.forEach(stock => {
-        const stockData = STOCK_MASTER_DATA[stock.code] || {};
-        const perShare = stockData.dividend !== undefined ? stockData.dividend : (stock.dividend || 0);
+        const info = getDividendInfo(stock.code, stock.currentPrice);
+        const perShare = info.perShare || stock.dividend || 0;
         const annualDiv = stock.shares * perShare;
         totalAnnualDividend += annualDiv;
 
@@ -1060,7 +1151,8 @@ function simulateDividendIncome(years = 1) {
             annual: annualDiv,
             monthly: Math.floor(annualDiv / 12),
             perShare: perShare,
-            yield: stock.currentPrice > 0 ? (perShare / stock.currentPrice * 100) : (stockData.dividend_yield || 0)
+            yield: info.yield,
+            source: info.source
         };
     });
 
@@ -1101,21 +1193,28 @@ function renderDividendPage() {
     const avgYield = totalCurrent > 0 ? (sim.annual / totalCurrent * 100) : 0;
 
     statsEl.innerHTML = `
-        <div class="stat-card"><div><p class="stat-label">年間配当見込み（税引前）</p><p class="stat-value" style="color: #1E7A4E;">${formatYen(sim.annual)}</p></div><div class="stat-icon">💰</div></div>
-        <div class="stat-card"><div><p class="stat-label">月あたり平均</p><p class="stat-value">${formatYen(sim.monthly)}</p></div><div class="stat-icon">📅</div></div>
-        <div class="stat-card"><div><p class="stat-label">ポートフォリオ利回り</p><p class="stat-value" style="color: #1E7A4E;">${avgYield.toFixed(2)} %</p></div><div class="stat-icon">📈</div></div>
+        <div class="stat-card"><div><p class="stat-label">年間配当見込み（税引前）</p><p class="stat-value" style="color: #1E7A4E;">${formatYen(sim.annual)}</p></div><div class="stat-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/></svg></div></div>
+        <div class="stat-card"><div><p class="stat-label">月あたり平均</p><p class="stat-value">${formatYen(sim.monthly)}</p></div><div class="stat-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></div></div>
+        <div class="stat-card"><div><p class="stat-label">ポートフォリオ利回り</p><p class="stat-value" style="color: #1E7A4E;">${avgYield.toFixed(2)} %</p></div><div class="stat-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></div></div>
     `;
 
     if (breakdownBody) {
         breakdownBody.innerHTML = Object.values(sim.breakdown)
             .sort((a, b) => b.annual - a.annual)
-            .map(b => `<tr>
-                <td><strong>${escapeHtml(b.name)}</strong></td>
+            .map(b => {
+                const tag = b.source === 'auto'
+                    ? ' <span style="font-size: 10px; color: var(--text-sub); border: 1px solid var(--border-color); border-radius: 4px; padding: 1px 4px; vertical-align: middle;">自動取得</span>'
+                    : b.source === 'none'
+                        ? ' <span style="font-size: 10px; color: var(--text-sub);">データなし</span>'
+                        : '';
+                return `<tr>
+                <td><strong>${escapeHtml(b.name)}</strong>${tag}</td>
                 <td>${b.shares.toLocaleString()} 株</td>
                 <td>¥${b.perShare}/株</td>
                 <td style="color: #1E7A4E;">${b.yield.toFixed(2)}%</td>
                 <td style="font-weight: bold; color: #1E7A4E;">${formatYen(b.annual)}</td>
-            </tr>`).join('');
+            </tr>`;
+            }).join('');
     }
 
     if (projectionEl) {
@@ -1258,7 +1357,7 @@ function selectSearchStock(code) {
     const info = getMasterInfo(code);
     const label = document.getElementById('selectedStockLabel');
     if (label && info) {
-        label.innerHTML = `✅ <strong>${escapeHtml(code)} ${escapeHtml(info.name)}</strong>（${escapeHtml(info.sector)}）を選択中`;
+        label.innerHTML = `<strong>${escapeHtml(code)} ${escapeHtml(info.name)}</strong>（${escapeHtml(info.sector)}）を選択中`;
         label.style.display = 'block';
     }
     const container = document.getElementById('stockSearchResults');
@@ -1375,8 +1474,8 @@ function updateChatSettingsUI() {
     if (!status) return;
     const hasKey = !!getClaudeApiKey();
     status.innerHTML = hasKey
-        ? '🟢 <strong>Claude AI モード</strong>（APIキー設定済み・このブラウザにのみ保存されています）'
-        : '⚪ 定型応答モード — Claude APIキーを設定すると、本物のAIがポートフォリオを踏まえて回答します';
+        ? '<strong>Claude AI モード</strong>（APIキー設定済み・このブラウザにのみ保存されています）'
+        : '定型応答モード — Claude APIキーを設定すると、AIがポートフォリオを踏まえて回答します';
     if (form) form.style.display = hasKey ? 'none' : 'flex';
     if (clearBtn) clearBtn.style.display = hasKey ? 'inline-flex' : 'none';
 }
@@ -1394,17 +1493,33 @@ function buildPortfolioContext() {
     const totalCurrent = portfolio.reduce((sum, s) => sum + s.currentPrice * s.shares, 0);
     const totalAcq = portfolio.reduce((sum, s) => sum + s.acquisitionPrice * s.shares, 0);
     const div = simulateDividendIncome(1);
+    const portfolioYield = totalCurrent > 0 ? (div.annual / totalCurrent * 100) : 0;
 
     const lines = portfolio.map(s => {
         const val = s.currentPrice * s.shares;
         const pct = (val / totalCurrent * 100).toFixed(1);
-        return `- ${s.name}(${s.code}) ${s.sector}: ${s.shares}株 取得単価¥${s.acquisitionPrice} 現在値¥${s.currentPrice} 構成比${pct}%`;
+        const dinfo = getDividendInfo(s.code, s.currentPrice);
+        const divStr = dinfo.perShare > 0 ? ` 配当¥${dinfo.perShare}/株(利回り${dinfo.yield.toFixed(1)}%)` : ' 無配';
+        return `- ${s.name}(${s.code}) ${normalizeSector(s.sector)}: ${s.shares}株 取得単価¥${s.acquisitionPrice} 現在値¥${s.currentPrice} 構成比${pct}%${divStr}`;
     });
+
+    // セクター内訳
+    const sectors = {};
+    portfolio.forEach(s => {
+        const sec = normalizeSector(s.sector);
+        sectors[sec] = (sectors[sec] || 0) + s.currentPrice * s.shares;
+    });
+    const sectorBreakdown = Object.entries(sectors)
+        .sort((a, b) => b[1] - a[1])
+        .map(([sec, val]) => `${sec} ${(val / totalCurrent * 100).toFixed(0)}%`)
+        .join(' / ');
 
     return `ユーザーの現在のポートフォリオ:
 ${lines.join('\n')}
 評価額合計: ¥${Math.round(totalCurrent).toLocaleString()} / 取得総額: ¥${Math.round(totalAcq).toLocaleString()} / 評価損益: ${totalCurrent >= totalAcq ? '+' : ''}¥${Math.round(totalCurrent - totalAcq).toLocaleString()}
-年間配当見込み(税引前・概算): ¥${Math.round(div.annual).toLocaleString()}`;
+セクター内訳: ${sectorBreakdown}
+年間配当見込み(税引前・概算): ¥${Math.round(div.annual).toLocaleString()} / ポートフォリオ利回り: ${portfolioYield.toFixed(2)}%
+（配当は直近実績ベースの概算。将来を保証するものではない）`;
 }
 
 async function callClaudeAPI(userMessage) {
@@ -1417,10 +1532,11 @@ async function callClaudeAPI(userMessage) {
     const systemPrompt = `あなたは「カブスコープ」という日本株ポートフォリオ管理アプリのAIアドバイザーです。投資初心者向けに、日本株・配当・株主優待・NISA・分散投資について、親しみやすく分かりやすい日本語で回答してください。
 
 ルール:
-- 回答は簡潔に（長くても300字程度）。専門用語には短い補足を付ける。
+- 回答は簡潔に（長くても300字程度）。専門用語には短い補足を付ける。過度な絵文字や煽り表現は使わず、落ち着いた実務的なトーンで話す。
 - 特定銘柄の売買を断定的に推奨しない。「〜という考え方があります」「最終判断はご自身で」というスタンスを保つ。
 - 税制や制度の話は「詳細は証券会社や税理士にご確認ください」と添える。
-- ユーザーのポートフォリオ情報が下記にあるので、質問に関係する場合は具体的に言及する。
+- ユーザーのポートフォリオ情報（保有銘柄・セクター内訳・配当利回り）が下記にあるので、質問に関係する場合は具体的な数値に触れて答える。集中度やセクターの偏り、利回りの水準など、データから読み取れる点を優先して指摘する。
+- 配当データは直近実績ベースの概算である点を踏まえ、将来の配当を断定しない。
 
 ${buildPortfolioContext()}`;
 
@@ -1471,7 +1587,9 @@ function appendChatMessage(role, html) {
     const chatHistoryEl = document.querySelector('.chat-history');
     const msg = document.createElement('div');
     msg.className = 'chat-message ' + (role === 'user' ? 'user-message' : 'ai-message');
-    msg.innerHTML = `<div class="message-avatar">${role === 'user' ? '👤' : '🤖'}</div><div class="message-content">${html}</div>`;
+    const aiAvatar = '<div class="message-avatar avatar-ai"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 14 15 20 8"/><polyline points="15 8 20 8 20 13"/></svg></div>';
+    const userAvatar = '<div class="message-avatar avatar-user"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>';
+    msg.innerHTML = `${role === 'user' ? userAvatar : aiAvatar}<div class="message-content">${html}</div>`;
     chatHistoryEl.appendChild(msg);
     chatHistoryEl.scrollTop = chatHistoryEl.scrollHeight;
     return msg;
@@ -1509,7 +1627,7 @@ async function sendChat() {
         const reply = await callClaudeAPI(message);
         thinkingMsg.querySelector('.message-content').innerHTML = `<p>${escapeHtml(reply).replace(/\n/g, '<br>')}</p>`;
     } catch (e) {
-        thinkingMsg.querySelector('.message-content').innerHTML = `<p style="color: var(--loss);">⚠️ ${escapeHtml(e.message)}</p><p style="color: var(--text-sub); font-size: 13px; margin-top: 8px;">${getAIResponse(message)}</p>`;
+        thinkingMsg.querySelector('.message-content').innerHTML = `<p style="color: var(--loss);">${escapeHtml(e.message)}</p><p style="color: var(--text-sub); font-size: 13px; margin-top: 8px;">${getAIResponse(message)}</p>`;
     } finally {
         CHAT_SENDING = false;
         const el = document.querySelector('.chat-history');
@@ -1551,7 +1669,7 @@ function getAIResponse(question) {
         return '株式投資のリスクを抑える基本は「分散」です。①銘柄の分散（5銘柄以上）②セクターの分散（違う業種を組み合わせる）③時間の分散（一度に買わず数回に分ける）。AI診断ページであなたの分散状況をチェックできます！';
     }
     if (question.includes('株価') || question.includes('推移')) {
-        return 'ダッシュボードの「🔄 株価を更新」ボタンでリアルタイム株価（Yahoo Finance）を取得できます。「資産推移」ページでは日ごとの評価額の変化をグラフで確認できますよ！';
+        return 'ダッシュボードの「株価を更新」ボタンでリアルタイム株価（Yahoo Finance）を取得できます。「資産推移」ページでは日ごとの評価額の変化をグラフで確認できます。';
     }
     if (question.includes('おすすめ') || question.includes('推奨') || question.includes('銘柄')) {
         return '「推奨銘柄」ページで、あなたのポートフォリオに足りないセクターを補える銘柄を提案しています。ぜひチェックしてみてください！';
@@ -1603,7 +1721,7 @@ async function performOCR() {
         const { data: { text } } = await Tesseract.recognize(file, 'jpn+eng', {
             logger: m => {
                 if (m.status === 'recognizing text') {
-                    document.getElementById('statusText').textContent = `🔍 OCR処理中... ${(m.progress * 100).toFixed(0)}%`;
+                    document.getElementById('statusText').textContent = `OCR処理中... ${(m.progress * 100).toFixed(0)}%`;
                 }
             }
         });
@@ -1616,7 +1734,7 @@ async function performOCR() {
         document.getElementById('ocrStatus').style.display = 'none';
         document.getElementById('extractedStocks').innerHTML = `
             <div style="background-color: #FFE6E6; padding: 16px; border-radius: 8px; color: #C81E1E; text-align: center;">
-                <p style="margin: 0;">⚠️ OCR処理に失敗しました</p>
+                <p style="margin: 0;">OCR処理に失敗しました</p>
                 <p style="font-size: 14px; margin-top: 8px; color: var(--text-sub);">画像の品質を確認してもう一度お試しください</p>
             </div>
         `;
@@ -1670,17 +1788,17 @@ function displayOCRResults(stocks) {
     if (stocks.length === 0) {
         container.innerHTML = `
             <div style="background-color: var(--accent-blue-light); padding: 16px; border-radius: 8px; text-align: center;">
-                <p style="color: var(--accent-blue); margin: 0;">📸 銘柄情報が見つかりませんでした</p>
+                <p style="color: var(--accent-blue); margin: 0;">銘柄情報が見つかりませんでした</p>
                 <p style="color: var(--text-sub); font-size: 14px; margin-top: 8px;">別のスクショを試すか、「手動で追加」をご利用ください</p>
             </div>
         `;
         return;
     }
 
-    let html = '<h4 style="margin-bottom: 16px; text-align: left;">📸 認識された銘柄情報</h4>';
+    let html = '<h4 style="margin-bottom: 16px; text-align: left;">認識された銘柄情報</h4>';
 
     stocks.forEach((stock, index) => {
-        const confidenceText = { high: '高 ✓', middle: '中 △', low: '低 ⚠️' }[stock.confidence] || '不明';
+        const confidenceText = { high: '高', middle: '中', low: '低' }[stock.confidence] || '不明';
         const confidenceColor = { high: '#1E7A4E', middle: '#E09112', low: '#D64545' }[stock.confidence] || '#999';
 
         html += `
@@ -1693,7 +1811,7 @@ function displayOCRResults(stocks) {
                     <span style="background-color: ${confidenceColor}; color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: bold;">信頼度: ${confidenceText}</span>
                 </div>
                 <div style="margin: 12px 0; border-top: 1px solid #ddd; padding-top: 12px;">
-                    <p style="color: var(--text-sub); font-size: 12px; margin: 0 0 8px 0;">💡 数値を確認・修正してください</p>
+                    <p style="color: var(--text-sub); font-size: 12px; margin: 0 0 8px 0;">数値を確認・修正してください</p>
                     <div class="ocr-field">
                         <label>株数 (株)</label>
                         <input type="number" id="shares_${index}" value="${stock.shares}" min="1">
@@ -1703,7 +1821,7 @@ function displayOCRResults(stocks) {
                         <input type="number" id="price_${index}" value="${stock.price || ''}" min="1" placeholder="要入力">
                     </div>
                 </div>
-                <button class="btn btn-primary" style="width: 100%;" onclick="addExtractedStock('${stock.code}', ${index})">✓ ポートフォリオに追加</button>
+                <button class="btn btn-primary" style="width: 100%;" onclick="addExtractedStock('${stock.code}', ${index})">ポートフォリオに追加</button>
             </div>
         `;
     });
@@ -1722,7 +1840,7 @@ function addExtractedStock(code, index) {
 
     addStockToPortfolio(code, shares, price);
     const name = STOCK_MASTER_DATA[code] ? STOCK_MASTER_DATA[code].name : code;
-    alert(`✅ ${name}(${code})を追加しました！\n株数: ${shares}株\n取得単価: ¥${price.toLocaleString()}`);
+    alert(`${name}(${code})を追加しました\n株数: ${shares}株\n取得単価: ¥${price.toLocaleString()}`);
     closeScreenshotModal();
     switchPage('dashboard');
     refreshPrices(true);
@@ -1788,7 +1906,7 @@ function checkAlerts() {
     if ([3, 9].includes(month)) {
         const hasAlert = ALERTS.some(a => a.type === 'kenri' && new Date(a.created).getMonth() === now.getMonth() && new Date(a.created).getFullYear() === now.getFullYear());
         if (!hasAlert) {
-            addAlert('kenri', `📅 ${month}月は多くの企業の配当権利確定月です。権利付き最終日までの保有で配当・優待の権利が得られます。`);
+            addAlert('kenri', `${month}月は多くの企業の配当権利確定月です。権利付き最終日までの保有で配当・優待の権利が得られます。`);
         }
     }
 
@@ -1797,7 +1915,7 @@ function checkAlerts() {
         const hasAlert = ALERTS.some(a => a.type === 'dividend' && new Date(a.created).getMonth() === now.getMonth() && new Date(a.created).getFullYear() === now.getFullYear());
         if (!hasAlert) {
             const divIncome = simulateDividendIncome(1);
-            addAlert('dividend', `💰 ${month}月は配当支払いシーズンです。あなたの年間配当見込み: ${formatYen(divIncome.annual)}`);
+            addAlert('dividend', `${month}月は配当支払いシーズンです。あなたの年間配当見込み: ${formatYen(divIncome.annual)}`);
         }
     }
 
@@ -1811,7 +1929,7 @@ function checkAlerts() {
                 new Date(a.created).toLocaleDateString() === todayStr
             );
             if (!hasAlert) {
-                addAlert('concentration', `⚠️ ${stock.name}の集中度が${(concentration * 100).toFixed(1)}%です。分散を検討しましょう。`, stock.code);
+                addAlert('concentration', `${stock.name}の集中度が${(concentration * 100).toFixed(1)}%です。分散を検討しましょう。`, stock.code);
             }
         }
     });
@@ -1831,7 +1949,7 @@ function checkAlerts() {
                 new Date(a.created).toLocaleDateString() === todayStr
             );
             if (!hasAlert) {
-                addAlert('sector', `⚠️ ${sector}セクターが${(sectorPercent * 100).toFixed(1)}%を占めています。分散を検討してください。`);
+                addAlert('sector', `${sector}セクターが${(sectorPercent * 100).toFixed(1)}%を占めています。分散を検討してください。`);
             }
         }
     });
@@ -1844,7 +1962,7 @@ function checkAlerts() {
                 new Date(a.created).toLocaleDateString() === todayStr
             );
             if (!hasAlert) {
-                const dir = stock.changePercent > 0 ? '📈 急騰' : '📉 急落';
+                const dir = stock.changePercent > 0 ? '急騰' : '急落';
                 addAlert('price', `${dir}: ${stock.name}が前日比${stock.changePercent > 0 ? '+' : ''}${stock.changePercent.toFixed(2)}%`, stock.code);
             }
         }
@@ -1921,4 +2039,10 @@ document.addEventListener('DOMContentLoaded', function () {
     updateDashboard();
     refreshPrices(); // 起動時に株価を自動取得（5分キャッシュ）
     loadFullMaster(); // 全銘柄マスターを先読み（検索用・非同期）
+    // 全銘柄配当データを先読み。読み込めたら配当・診断ページを再描画
+    loadDividends().then(d => {
+        if (!d) return;
+        if (document.getElementById('dividend').classList.contains('active')) renderDividendPage();
+        if (document.getElementById('ai-analysis').classList.contains('active')) updateAIAnalysis();
+    });
 });
