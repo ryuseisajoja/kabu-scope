@@ -1314,19 +1314,26 @@ function closeModal() {
     document.getElementById('stockDetailModal').style.display = 'none';
 }
 
-// ===== 手動追加モーダル（全銘柄検索） =====
+// ===== 手動追加モーダル（全銘柄検索・複数まとめて追加） =====
 let MANUAL_SELECTED_CODE = null;
+let PENDING_STOCKS = []; // { code, name, sector, shares, price }
 
 function openManualAdd() {
     document.getElementById('modalOverlay').style.display = 'block';
     document.getElementById('manualAddModal').style.display = 'block';
     MANUAL_SELECTED_CODE = null;
+    PENDING_STOCKS = [];
+    renderPendingList();
     const input = document.getElementById('stockSearchInput');
     if (input) { input.value = ''; input.focus(); }
     const results = document.getElementById('stockSearchResults');
     if (results) results.innerHTML = '';
     const label = document.getElementById('selectedStockLabel');
     if (label) label.style.display = 'none';
+    const shares = document.getElementById('manualShares');
+    const price = document.getElementById('manualPrice');
+    if (shares) shares.value = '';
+    if (price) price.value = '';
 
     // 全銘柄マスターを読み込み（初回のみ）、対応銘柄数を表示
     loadFullMaster().then(full => {
@@ -1418,36 +1425,115 @@ function selectSearchStock(code) {
     if (shares) shares.focus();
 }
 
-async function submitManualAdd() {
+// 現在の入力欄の銘柄コード・株数・単価を検証して返す（未入力時は null）
+async function readManualEntry(silent = false) {
     const rawQuery = (document.getElementById('stockSearchInput')?.value || '').trim().toUpperCase();
     const shares = parseInt(document.getElementById('manualShares').value, 10);
     const price = parseFloat(document.getElementById('manualPrice').value);
 
-    // 選択済みコード、なければ入力欄が4文字コードそのものならそれを使用
     let code = MANUAL_SELECTED_CODE;
     if (!code && /^\d[\dA-Z]{3}$/.test(rawQuery)) code = rawQuery;
-    if (!code) { alert('検索結果から銘柄を選択してください'); return; }
-    if (!shares || shares <= 0) { alert('株数を入力してください'); return; }
-    if (!price || price <= 0) { alert('取得単価を入力してください'); return; }
+    if (!code) { if (!silent) alert('検索結果から銘柄を選択してください'); return null; }
+    if (!shares || shares <= 0) { if (!silent) alert('株数を入力してください'); return null; }
+    if (!price || price <= 0) { if (!silent) alert('取得単価を入力してください'); return null; }
+    if (PENDING_STOCKS.some(p => p.code === code)) {
+        if (!silent) alert('その銘柄はすでにリストにあります');
+        return null;
+    }
 
-    let nameOverride = null;
-    if (!getMasterInfo(code)) {
+    let info = getMasterInfo(code);
+    let name = info ? info.name : null;
+    let sector = info ? info.sector : '不明';
+    if (!info) {
         // どのマスターにもない銘柄：Yahoo Financeから名称を取得（ローカルのみ動作）
         try {
             const quote = await fetchQuote(code);
-            nameOverride = quote.name || `銘柄${code}`;
+            name = quote.name || `銘柄${code}`;
         } catch (e) {
-            if (!confirm(`銘柄コード ${code} の情報を取得できませんでした。\nこのまま追加しますか？（名称は「銘柄${code}」になります）`)) return;
-            nameOverride = `銘柄${code}`;
+            if (!silent && !confirm(`銘柄コード ${code} の情報を取得できませんでした。\nこのまま追加しますか？（名称は「銘柄${code}」になります）`)) return null;
+            name = `銘柄${code}`;
         }
     }
+    return { code, name, sector, shares, price };
+}
 
-    addStockToPortfolio(code, shares, price, nameOverride);
+// 入力欄をクリアして次の銘柄を入力できる状態に戻す
+function resetManualEntry() {
+    MANUAL_SELECTED_CODE = null;
+    const input = document.getElementById('stockSearchInput');
+    if (input) { input.value = ''; input.focus(); }
+    document.getElementById('manualShares').value = '';
+    document.getElementById('manualPrice').value = '';
+    const label = document.getElementById('selectedStockLabel');
+    if (label) label.style.display = 'none';
+    const results = document.getElementById('stockSearchResults');
+    if (results) results.innerHTML = '';
+}
+
+// 現在の入力をリストに追加（複数まとめて追加用）
+async function stageManualStock() {
+    const entry = await readManualEntry(false);
+    if (!entry) return;
+    PENDING_STOCKS.push(entry);
+    renderPendingList();
+    resetManualEntry();
+}
+
+function removePendingStock(code) {
+    PENDING_STOCKS = PENDING_STOCKS.filter(p => p.code !== code);
+    renderPendingList();
+}
+
+function renderPendingList() {
+    const section = document.getElementById('pendingSection');
+    const list = document.getElementById('pendingList');
+    const count = document.getElementById('pendingCount');
+    const submitLabel = document.getElementById('manualSubmitLabel');
+    if (!section || !list) return;
+
+    if (PENDING_STOCKS.length === 0) {
+        section.style.display = 'none';
+        if (submitLabel) submitLabel.textContent = '追加する';
+        return;
+    }
+    section.style.display = 'block';
+    if (count) count.textContent = `（${PENDING_STOCKS.length}件）`;
+    if (submitLabel) submitLabel.textContent = `まとめて追加（${PENDING_STOCKS.length}件）`;
+    list.innerHTML = PENDING_STOCKS.map(p => `
+        <div class="pending-item">
+            <div class="pending-info">
+                <strong>${escapeHtml(p.code)} ${escapeHtml(p.name)}</strong>
+                <span>${p.shares.toLocaleString()}株 / 取得単価 ¥${p.price.toLocaleString()}</span>
+            </div>
+            <button class="pending-remove" onclick="removePendingStock('${escapeHtml(p.code)}')" title="リストから外す"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+        </div>
+    `).join('');
+}
+
+async function submitManualAdd() {
+    // 入力欄に未確定の銘柄があればリストに加える（1銘柄だけの追加もこれで成立）
+    const current = await readManualEntry(true);
+    if (current && !PENDING_STOCKS.some(p => p.code === current.code)) {
+        PENDING_STOCKS.push(current);
+    }
+    if (PENDING_STOCKS.length === 0) {
+        alert('追加する銘柄がありません。銘柄を選び、株数・取得単価を入力してください');
+        return;
+    }
+
+    const toAdd = [...PENDING_STOCKS];
+    for (const p of toAdd) {
+        const info = getMasterInfo(p.code);
+        addStockToPortfolio(p.code, p.shares, p.price, info ? null : p.name);
+    }
+    const n = toAdd.length;
+    PENDING_STOCKS = [];
     closeManualAddModal();
     document.getElementById('manualShares').value = '';
     document.getElementById('manualPrice').value = '';
     switchPage('dashboard');
     refreshPrices(true);
+    if (n > 1) alert(`${n}銘柄をポートフォリオに追加しました`);
 }
 
 // ===== ポートフォリオ操作 =====
