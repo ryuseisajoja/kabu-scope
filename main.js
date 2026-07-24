@@ -537,6 +537,34 @@ async function loadDividends() {
     return FULL_DIVIDENDS;
 }
 
+// 株主優待データ（手動キュレーション・benefits.json）
+// 形式: { "9202": { c: 優待内容, s: 必要株数, m: [権利確定月], k: 種類 }, ... }
+let FULL_BENEFITS = null;
+async function loadBenefits() {
+    if (FULL_BENEFITS !== null) return FULL_BENEFITS;
+    try {
+        const res = await fetch('benefits.json?t=' + Math.floor(Date.now() / 3600000));
+        FULL_BENEFITS = res.ok ? (await res.json()).benefits : false;
+    } catch (e) {
+        FULL_BENEFITS = false;
+    }
+    return FULL_BENEFITS;
+}
+
+// コードから優待情報を取得（構造化データ優先 → 旧インラインデータ）
+// 戻り値: { content, minShares, months:[], kind } または null（優待なし）
+function getBenefitInfo(code) {
+    if (FULL_BENEFITS && FULL_BENEFITS[code]) {
+        const b = FULL_BENEFITS[code];
+        return { content: b.c, minShares: b.s || null, months: b.m || [], kind: b.k || '' };
+    }
+    // フォールバック: 旧来の文字列データ（benefits.json 未読込やカバー外向け）
+    if (typeof BENEFIT_DATA !== 'undefined' && BENEFIT_DATA[code]) {
+        return { content: BENEFIT_DATA[code], minShares: null, months: [], kind: '' };
+    }
+    return null;
+}
+
 // コードから配当情報を取得（厳選データ優先 → 全銘柄配当データ）
 // 戻り値: { perShare: 1株配当(円), yield: 利回り(%), source: 'curated'|'auto'|'none' }
 function getDividendInfo(code, currentPrice) {
@@ -746,9 +774,12 @@ function updateStockTable(portfolio) {
         const changeHtml = (typeof stock.changePercent === 'number')
             ? `<span style="color: ${stock.changePercent >= 0 ? '#1E7A4E' : '#D64545'}; font-size: 12px;">${stock.changePercent >= 0 ? '▲' : '▼'}${Math.abs(stock.changePercent).toFixed(2)}%</span>`
             : '';
+        const benefitBadge = getBenefitInfo(stock.code)
+            ? `<span class="benefit-badge" title="株主優待あり"><svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>優待</span>`
+            : '';
         return `
         <tr>
-            <td><strong>${escapeHtml(stock.name)} (${escapeHtml(stock.code)})</strong></td>
+            <td><strong>${escapeHtml(stock.name)} (${escapeHtml(stock.code)})</strong>${benefitBadge}</td>
             <td>${stock.shares.toLocaleString()} 株</td>
             <td>${formatYen(stock.acquisitionPrice)}</td>
             <td>${formatYen(stock.currentPrice)} ${changeHtml}</td>
@@ -1245,7 +1276,7 @@ function openStockDetail(code) {
     document.getElementById('modalCode').textContent = code;
     document.getElementById('modalPrice').textContent = data.sector;
     document.getElementById('modalDividend').textContent = data.dividend_yield + '%';
-    document.getElementById('modalBenefit').textContent = BENEFIT_DATA[code] || 'なし（配当重視の銘柄です）';
+    renderModalBenefit(code);
     document.getElementById('modalAdvice').innerHTML = `<p style="line-height: 1.6;">${escapeHtml(`${data.name}は${data.sector}セクターの銘柄です。購入前に証券会社のサイトで最新の株価・業績・配当情報を確認しましょう。`)}</p>`;
 
     // リアルタイム株価を取得して表示に反映
@@ -1257,6 +1288,25 @@ function openStockDetail(code) {
             document.getElementById('modalDividend').textContent = yieldNow + '%';
         }
     }).catch(() => {});
+}
+
+// 優待情報を銘柄詳細モーダルに構造化表示
+function renderModalBenefit(code) {
+    const el = document.getElementById('modalBenefit');
+    if (!el) return;
+    const b = getBenefitInfo(code);
+    if (!b) {
+        el.innerHTML = '<span style="color: var(--text-sub);">株主優待はありません（配当重視の銘柄です）</span>';
+        return;
+    }
+    const metas = [];
+    if (b.kind) metas.push(`<span class="benefit-tag">${escapeHtml(b.kind)}</span>`);
+    if (b.minShares) metas.push(`必要株数の目安: ${b.minShares.toLocaleString()}株〜`);
+    if (b.months && b.months.length) metas.push(`権利確定月: ${b.months.map(m => m + '月').join('・')}`);
+    el.innerHTML = `
+        <p style="margin: 0 0 ${metas.length ? '8px' : '0'} 0; font-weight: 700;">${escapeHtml(b.content)}</p>
+        ${metas.length ? `<p style="margin: 0; font-size: 12.5px; color: var(--text-sub); display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">${metas.join('<span style="color:var(--border-color);">/</span>')}</p>` : ''}
+    `;
 }
 
 function closeModal() {
@@ -2039,6 +2089,10 @@ document.addEventListener('DOMContentLoaded', function () {
     updateDashboard();
     refreshPrices(); // 起動時に株価を自動取得（5分キャッシュ）
     loadFullMaster(); // 全銘柄マスターを先読み（検索用・非同期）
+    // 株主優待データを先読み。読み込めたらダッシュボードの優待バッジを反映
+    loadBenefits().then(b => {
+        if (b && document.getElementById('dashboard').classList.contains('active')) updateDashboard();
+    });
     // 全銘柄配当データを先読み。読み込めたら配当・診断ページを再描画
     loadDividends().then(d => {
         if (!d) return;
