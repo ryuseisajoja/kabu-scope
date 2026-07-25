@@ -1835,129 +1835,462 @@ function closeScreenshotModal() {
     document.getElementById('previewImg').style.display = 'none';
     document.getElementById('ocrStatus').style.display = 'none';
     document.getElementById('extractedStocks').innerHTML = '';
+    const thumbs = document.getElementById('previewThumbs');
+    if (thumbs) thumbs.innerHTML = '';
+    OCR_RESULTS = [];
+}
+
+let OCR_RESULTS = [];
+
+// 画像を拡大・グレースケール化してOCR精度を上げる（スマホのスクショは文字が小さく誤認識しやすい）
+function preprocessImageForOCR(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('画像の読み込みに失敗しました'));
+        reader.onload = e => {
+            const img = new Image();
+            img.onerror = () => reject(new Error('画像を解釈できませんでした'));
+            img.onload = () => {
+                // 長辺2000px程度まで拡大（小さすぎる文字を補う。大きい画像はそのまま）
+                const scale = Math.min(3, Math.max(1, 2000 / Math.max(img.width, img.height)));
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.round(img.width * scale);
+                canvas.height = Math.round(img.height * scale);
+                const ctx = canvas.getContext('2d');
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = 'high';
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                // グレースケール＋コントラスト強調
+                try {
+                    const d = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    const px = d.data;
+                    for (let i = 0; i < px.length; i += 4) {
+                        const g = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+                        const v = Math.max(0, Math.min(255, (g - 128) * 1.35 + 128));
+                        px[i] = px[i + 1] = px[i + 2] = v;
+                    }
+                    ctx.putImageData(d, 0, 0);
+                } catch (err) {
+                    // getImageDataが使えない環境ではそのまま使う
+                }
+                resolve(canvas);
+            };
+            img.src = e.target.result;
+        };
+        reader.readAsDataURL(file);
+    });
+}
+
+// 画像をAPI送信用にリサイズしてbase64化（長辺1568pxが上限の目安）
+function fileToVisionPart(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('画像の読み込みに失敗しました'));
+        reader.onload = e => {
+            const img = new Image();
+            img.onerror = () => reject(new Error('画像を解釈できませんでした'));
+            img.onload = () => {
+                const scale = Math.min(1, 1568 / Math.max(img.width, img.height));
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.round(img.width * scale);
+                canvas.height = Math.round(img.height * scale);
+                canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+                resolve({
+                    type: 'image',
+                    source: { type: 'base64', media_type: 'image/jpeg', data: dataUrl.split(',')[1] }
+                });
+            };
+            img.src = e.target.result;
+        };
+        reader.readAsDataURL(file);
+    });
+}
+
+// APIキーがある場合はClaudeの画像認識で読み取る（日本語の証券アプリ画面はこちらが高精度）
+async function extractStocksWithClaude(files, statusEl) {
+    const apiKey = getClaudeApiKey();
+    if (!apiKey) return null;
+
+    statusEl.textContent = '画像を準備中...';
+    const parts = [];
+    for (const f of files.slice(0, 8)) parts.push(await fileToVisionPart(f));
+
+    statusEl.textContent = `画像を解析中...（${parts.length}枚）`;
+    const instruction = `これは日本の証券会社アプリのスクリーンショットです。写っている保有銘柄の情報を抽出してください。
+
+出力は次の形式のJSONのみ。説明文やコードブロックは不要です。
+{"stocks":[{"code":"9501","name":"東京電力ホールディングス","shares":200,"price":456}]}
+
+ルール:
+- code: 4桁の証券コード（例 9501）。画面に無ければ null。
+- name: 画面に表示されている銘柄名。
+- shares: 保有数量（株数）。画面に書かれていなければ null。推測は禁止。
+- price: 取得単価（平均取得価額）。画面に書かれていなければ null。推測は禁止。
+- 「現在値」「株価」「評価額」「前日比」は取得単価ではありません。取得単価として使わないこと。
+- 取得単価が無く「取得金額（総額）」がある場合は price を null にし、totalCost にその金額を入れてください。
+- お気に入りや株価一覧など保有情報が無い画面では、code と name だけ埋めて shares と price は null にしてください。
+- 画面に写っている銘柄すべてを、上から順に出力してください。`;
+
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+            model: 'claude-opus-4-8',
+            max_tokens: 4096,
+            messages: [{ role: 'user', content: [...parts, { type: 'text', text: instruction }] }]
+        })
+    });
+    if (!res.ok) throw new Error(`画像解析APIエラー (${res.status})`);
+
+    const data = await res.json();
+    const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('解析結果を読み取れませんでした');
+    const parsed = JSON.parse(m[0]);
+    if (!parsed.stocks || !Array.isArray(parsed.stocks)) throw new Error('解析結果の形式が想定と異なります');
+
+    const out = [];
+    for (const s of parsed.stocks) {
+        // コードが無い/マスターに無い場合は銘柄名から特定する
+        let code = s.code ? String(s.code).trim().toUpperCase() : null;
+        if (!code || !getMasterInfo(code)) code = s.name ? findCodeByName(String(s.name)) : null;
+        const info = code ? getMasterInfo(code) : null;
+        if (!info) continue;
+
+        let shares = Number(s.shares) > 0 ? Math.round(Number(s.shares)) : 0;
+        let price = Number(s.price) > 0 ? Number(s.price) : 0;
+        if (!price && shares && Number(s.totalCost) > 0) price = Math.round(Number(s.totalCost) / shares);
+
+        const div = getDividendInfo(code, price);
+        out.push({
+            code, name: info.name, sector: info.sector, shares, price,
+            confidence: (shares && price) ? 'high' : (shares || price) ? 'middle' : 'low',
+            dividend: div.perShare, dividend_yield: div.yield
+        });
+    }
+    return out;
 }
 
 async function performOCR() {
     const input = document.getElementById('screenshotInput');
-    if (!input.files || !input.files[0]) {
-        alert('スクショを選択してください');
+    const files = input && input.files ? Array.from(input.files) : [];
+    if (files.length === 0) {
+        alert('スクショを選択してください（複数選択できます）');
         return;
     }
-    if (typeof Tesseract === 'undefined') {
+    const useVision = !!getClaudeApiKey();
+    if (!useVision && typeof Tesseract === 'undefined') {
         alert('OCRライブラリの読み込み中です。少し待ってからもう一度お試しください。');
         return;
     }
 
-    const file = input.files[0];
     document.getElementById('ocrStatus').style.display = 'block';
     document.getElementById('analyzeBtn').disabled = true;
     document.getElementById('extractedStocks').innerHTML = '';
+    const statusEl = document.getElementById('statusText');
 
-    try {
-        const { data: { text } } = await Tesseract.recognize(file, 'jpn+eng', {
-            logger: m => {
-                if (m.status === 'recognizing text') {
-                    document.getElementById('statusText').textContent = `OCR処理中... ${(m.progress * 100).toFixed(0)}%`;
-                }
+    // 全銘柄マスターと配当データを先に読み込む（東京電力など厳選200銘柄以外も認識するため）
+    statusEl.textContent = '銘柄マスターを準備中...';
+    await Promise.all([loadFullMaster(), loadDividends()]);
+
+    const merged = new Map(); // code -> stock（複数画像・複数行の結果を統合）
+    let failures = 0;
+    let visionNote = null;
+
+    // 画像認識（APIキー設定時）を優先。失敗したら端末内OCRにフォールバック
+    if (useVision) {
+        try {
+            const visionStocks = await extractStocksWithClaude(files, statusEl);
+            if (visionStocks && visionStocks.length > 0) {
+                visionStocks.forEach(s => mergeOCRStock(merged, s, 0));
+                document.getElementById('ocrStatus').style.display = 'none';
+                document.getElementById('analyzeBtn').disabled = false;
+                OCR_RESULTS = Array.from(merged.values());
+                displayOCRResults(OCR_RESULTS, {
+                    total: files.length,
+                    failures: 0,
+                    vision: true,
+                    note: files.length > 8 ? `一度に読み取れるのは8枚までです。${files.length}枚のうち最初の8枚を読み取りました` : null
+                });
+                return;
             }
-        });
-
-        document.getElementById('ocrStatus').style.display = 'none';
-        const stocks = parseStockInfoFromText(text);
-        displayOCRResults(stocks);
-    } catch (error) {
-        console.error('OCR Error:', error);
-        document.getElementById('ocrStatus').style.display = 'none';
-        document.getElementById('extractedStocks').innerHTML = `
-            <div style="background-color: #FFE6E6; padding: 16px; border-radius: 8px; color: #C81E1E; text-align: center;">
-                <p style="margin: 0;">OCR処理に失敗しました</p>
-                <p style="font-size: 14px; margin-top: 8px; color: var(--text-sub);">画像の品質を確認してもう一度お試しください</p>
-            </div>
-        `;
+            visionNote = '画像認識では銘柄が見つからなかったため、端末内のOCRでも読み取りました';
+        } catch (e) {
+            console.error('Vision error:', e);
+            visionNote = `画像認識に失敗したため端末内OCRで読み取りました（${e.message}）`;
+        }
+        if (typeof Tesseract === 'undefined') {
+            document.getElementById('ocrStatus').style.display = 'none';
+            document.getElementById('analyzeBtn').disabled = false;
+            displayOCRResults([], { total: files.length, failures: files.length, note: visionNote });
+            return;
+        }
     }
 
+    for (let i = 0; i < files.length; i++) {
+        const label = files.length > 1 ? `${i + 1}枚目 / ${files.length}枚：` : '';
+        try {
+            statusEl.textContent = `${label}画像を処理中...`;
+            const source = await preprocessImageForOCR(files[i]).catch(() => files[i]);
+            const { data: { text } } = await Tesseract.recognize(source, 'jpn+eng', {
+                logger: m => {
+                    if (m.status === 'recognizing text') {
+                        statusEl.textContent = `${label}読み取り中... ${(m.progress * 100).toFixed(0)}%`;
+                    }
+                }
+            });
+            for (const s of parseStockInfoFromText(text)) {
+                mergeOCRStock(merged, s, i + 1);
+            }
+        } catch (error) {
+            console.error('OCR Error:', error);
+            failures++;
+        }
+    }
+
+    document.getElementById('ocrStatus').style.display = 'none';
     document.getElementById('analyzeBtn').disabled = false;
+
+    OCR_RESULTS = Array.from(merged.values());
+    displayOCRResults(OCR_RESULTS, { total: files.length, failures, note: visionNote });
 }
 
-function parseStockInfoFromText(text) {
+// 同じ銘柄が複数画像・複数行で見つかった場合、情報量の多い方を残す
+function mergeOCRStock(map, stock, imageIndex) {
+    stock.image = imageIndex;
+    const prev = map.get(stock.code);
+    if (!prev) { map.set(stock.code, stock); return; }
+    if (!prev.shares && stock.shares) prev.shares = stock.shares;
+    if (!prev.price && stock.price) prev.price = stock.price;
+    prev.confidence = (prev.shares && prev.price) ? 'high' : (prev.shares || prev.price) ? 'middle' : 'low';
+}
+
+// OCRのゆらぎを吸収（全角→半角、桁区切りスペースなど）
+function normalizeOcrText(text) {
+    return text
+        .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+        .replace(/[Ａ-Ｚａ-ｚ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+        .replace(/[，、]/g, ',')
+        .replace(/[．]/g, '.')
+        .replace(/[￥]/g, '¥');
+    // 桁区切りの空白補正はしない：改行や「2127 100株」のような並びを壊し、
+    // 銘柄コードと金額が連結してしまうため（コードの取りこぼしの原因になる）
+}
+
+// 銘柄名 → コードの逆引き索引（コードが読めなくても名前で特定できるようにする）
+let NAME_INDEX = null;
+function buildNameIndex() {
+    if (NAME_INDEX) return NAME_INDEX;
+    // マスターの銘柄名は全角英数（ＫＯＺＯ等）を含むため半角に揃えてから比較する。
+    // 長音符とハイフンはOCRが混同しやすいので同じ記号に寄せる（「センター」「センタ-」を同一視）
+    const base = s => s
+        .replace(/[０-９Ａ-Ｚａ-ｚ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+        .replace(/＆/g, '&')
+        .replace(/株式会社/g, '')
+        .replace(/[\s・･,，.。()（）「」]/g, '')
+        .toUpperCase();
+    const dashes = s => s.replace(/[ー－―‐]/g, '-');
+    // 「ホールディングス」等の表記ゆれを畳んだ形（照合用）
+    const norm = s => dashes(base(s).replace(/ホールディングス|ホールディング|グループ本社|グループ/g, 'HD'));
+    // 畳まないそのままの形（切り詰められた名前の前方一致用）
+    const normRaw = s => dashes(base(s));
+
+    NAME_INDEX = [];
+    const add = (code, name) => {
+        const n = norm(name);
+        if (n.length >= 3) NAME_INDEX.push([n, normRaw(name), code]);
+    };
+    for (const [code, d] of Object.entries(STOCK_MASTER_DATA)) add(code, d.name);
+    if (FULL_MASTER) {
+        for (const [code, arr] of Object.entries(FULL_MASTER)) {
+            if (!STOCK_MASTER_DATA[code]) add(code, arr[0]);
+        }
+    }
+    // 長い名前を優先（「三菱UFJ」より「三菱UFJフィナンシャルHD」を先に当てる）
+    NAME_INDEX.sort((a, b) => b[0].length - a[0].length);
+    NAME_INDEX.normalize = norm;
+    NAME_INDEX.normalizeRaw = normRaw;
+    return NAME_INDEX;
+}
+
+function findCodeByName(line) {
+    const idx = buildNameIndex();
+    const target = idx.normalize(line);
+    if (target.length < 3) return null;
+    for (const [name, , code] of idx) {
+        if (target.includes(name)) return code;
+    }
+    // 一覧画面では銘柄名が途中で切れることが多い（例「日本M&Aセンターホールデ」）ので前方一致も試す
+    const raw = idx.normalizeRaw(line);
+    if (raw.length >= 6) {
+        for (const [, rawName, code] of idx) {
+            if (rawName.startsWith(raw)) return code;
+        }
+    }
+    return null;
+}
+
+// 数値の取り出し（ラベル付きを優先。ラベルは行をまたぐことがあるので窓テキストで探す）
+function pickNumber(windowText, patterns) {
+    for (const re of patterns) {
+        const m = windowText.match(re);
+        if (m) {
+            const v = parseFloat(m[1].replace(/,/g, ''));
+            if (!isNaN(v) && v > 0) return v;
+        }
+    }
+    return 0;
+}
+
+function parseStockInfoFromText(rawText) {
+    const text = normalizeOcrText(rawText);
+    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     const stocks = [];
-    const lines = text.split('\n').filter(line => line.trim().length > 0);
     const processedCodes = new Set();
 
-    for (const line of lines) {
-        const codeMatches = line.matchAll(/(\d{4})/g);
+    const pushStock = (code, windowText) => {
+        if (!code || processedCodes.has(code)) return;
+        const info = getMasterInfo(code); // 厳選マスター → 全銘柄マスター（4,400銘柄超）
+        if (!info) return;
+        processedCodes.add(code);
 
-        for (const match of codeMatches) {
-            const code = match[1];
-            if (processedCodes.has(code)) continue;
-
-            const masterData = STOCK_MASTER_DATA[code];
-            if (!masterData) continue;
-
-            processedCodes.add(code);
-
-            const sharesMatch = line.match(/([\d,]{1,7})\s*(?:株|口)/);
-            const priceMatch = line.match(/[¥￥]?\s*([\d,]+(?:\.\d+)?)\s*円/) || line.match(/[¥￥]\s*([\d,]+(?:\.\d+)?)/);
-
-            const shares = sharesMatch ? parseInt(sharesMatch[1].replace(/,/g, ''), 10) : 100;
-            const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : 0;
-
-            stocks.push({
-                code,
-                name: masterData.name,
-                sector: masterData.sector,
-                shares,
-                price,
-                confidence: (sharesMatch && priceMatch) ? 'high' : (sharesMatch || priceMatch) ? 'middle' : 'low',
-                dividend: masterData.dividend,
-                dividend_yield: masterData.dividend_yield
-            });
+        // 株数：「保有数量 100」「100株」などラベル付きを優先
+        const shares = pickNumber(windowText, [
+            /(?:保有)?(?:数量|株数|口数|保有株数)[^\d\n]{0,8}([\d,]+)/,
+            /([\d,]{1,9})\s*(?:株|口)(?![式数])/
+        ]);
+        // 取得単価：「取得単価」「平均取得価額」を優先。現在値・評価額は取得単価ではないので使わない
+        let price = pickNumber(windowText, [
+            /(?:平均)?取得(?:単価|価額|価格)[^\d\n]{0,10}¥?\s*([\d,]+(?:\.\d+)?)/,
+            /(?:平均)?(?:買付|買付け)?(?:単価|コスト)[^\d\n]{0,8}¥?\s*([\d,]+(?:\.\d+)?)/
+        ]);
+        // 取得単価がなく「取得金額（総額）」がある場合は割り戻す
+        if (!price && shares) {
+            const total = pickNumber(windowText, [/取得(?:金額|額|総額)[^\d\n]{0,10}¥?\s*([\d,]+)/]);
+            if (total) price = Math.round(total / shares);
         }
+
+        const div = getDividendInfo(code, price);
+        stocks.push({
+            code,
+            name: info.name,
+            sector: info.sector,
+            shares: shares || 0,
+            price: price || 0,
+            confidence: (shares && price) ? 'high' : (shares || price) ? 'middle' : 'low',
+            dividend: div.perShare,
+            dividend_yield: div.yield
+        });
+    };
+
+    // 1) 各行がどの銘柄の行かを先に判定する（コード優先、無ければ銘柄名から）
+    const codeAt = lines.map(line => {
+        const byCode = findCodeInLine(line);
+        if (byCode) return byCode;
+        if (/[ぁ-んァ-ヶ一-龠]/.test(line)) return findCodeByName(line);
+        return null;
+    });
+
+    // 2) 銘柄ごとに、次の銘柄が現れる前までを窓として数値を拾う
+    //    （窓が次の行にはみ出すと隣の銘柄の株数・単価を取り違えるため上限も設ける）
+    for (let i = 0; i < lines.length; i++) {
+        const code = codeAt[i];
+        if (!code || processedCodes.has(code)) continue;
+        let end = Math.min(lines.length, i + 5);
+        for (let j = i + 1; j < end; j++) {
+            if (codeAt[j] && codeAt[j] !== code) { end = j; break; }
+        }
+        pushStock(code, lines.slice(i, end).join('\n'));
     }
 
     return stocks;
 }
 
-function displayOCRResults(stocks) {
+// 行の中から銘柄コードらしい文字列（4桁数字 or 3桁数字+英字の新形式）を探す。
+// lookbehind は古いiOS Safariで構文エラーになり全スクリプトが停止するため使わない
+function findCodeInLine(line) {
+    const re = /\d{3}[0-9A-Z]/g;
+    let m;
+    while ((m = re.exec(line)) !== null) {
+        const before = m.index > 0 ? line[m.index - 1] : '';
+        const after = line.slice(m.index + 4, m.index + 6);
+        // 金額・率の一部（¥1,234 / 5,796円 / 8.61%）はコードではない
+        if (/[\d,.¥+\-]/.test(before)) continue;
+        if (/^\s*(?:円|%|％|株|口|,|\.)/.test(after)) continue;
+        if (/^\d/.test(after)) continue; // 5桁以上の数字はコードではない
+        if (getMasterInfo(m[0])) return m[0];
+    }
+    return null;
+}
+
+function displayOCRResults(stocks, meta = {}) {
     const container = document.getElementById('extractedStocks');
+    const shotCount = meta.total || 1;
+
+    const noteHtml = meta.note ? `<p style="color: var(--text-sub); font-size: 12px; margin-top: 8px;">${escapeHtml(meta.note)}</p>` : '';
 
     if (stocks.length === 0) {
         container.innerHTML = `
-            <div style="background-color: var(--accent-blue-light); padding: 16px; border-radius: 8px; text-align: center;">
-                <p style="color: var(--accent-blue); margin: 0;">銘柄情報が見つかりませんでした</p>
-                <p style="color: var(--text-sub); font-size: 14px; margin-top: 8px;">別のスクショを試すか、「手動で追加」をご利用ください</p>
+            <div style="background-color: var(--accent-blue-light); padding: 16px; border-radius: 8px; text-align: left;">
+                <p style="color: var(--accent-blue); margin: 0; font-weight: 700;">銘柄情報が見つかりませんでした</p>
+                <p style="color: var(--text-sub); font-size: 13px; margin-top: 8px; line-height: 1.7;">
+                    次のどれかに当てはまらないか確認してください。<br>
+                    ・文字が小さすぎる／画像がぼやけている（画面を拡大してから撮ると精度が上がります）<br>
+                    ・銘柄コードと銘柄名が写っていない（名前だけでも認識を試みます）<br>
+                    ・撮った画面が<strong>お気に入り・ランキング</strong>など保有情報のない画面<br>
+                    ${getClaudeApiKey() ? '' : '読み取り精度を上げたい場合は「相談」ページでAPIキーを設定すると、画像認識で読み取れるようになります。<br>'}
+                    うまくいかない場合は「手動で追加」から検索して登録できます（こちらは全銘柄対応で確実です）。
+                </p>
+                ${noteHtml}
             </div>
         `;
         return;
     }
 
-    let html = '<h4 style="margin-bottom: 16px; text-align: left;">認識された銘柄情報</h4>';
+    const needInput = stocks.filter(s => !s.shares || !s.price).length;
+    let html = `<div class="ocr-summary">
+        <strong>${stocks.length}銘柄</strong>を認識しました${shotCount > 1 ? `（${shotCount}枚のスクショから）` : ''}${meta.failures ? `<br><span style="color: var(--loss);">${meta.failures}枚は読み取りに失敗しました</span>` : ''}
+        ${needInput ? `<br><span style="color: #E09112;">うち${needInput}銘柄は株数または取得単価が画面に写っていないため入力が必要です</span>` : '<br><span style="color: var(--profit);">株数・取得単価もすべて読み取れました。そのまま追加できます</span>'}
+        ${noteHtml}
+    </div>
+    <div class="ocr-bulk-bar">
+        <label class="ocr-check-all"><input type="checkbox" id="ocrCheckAll" checked onchange="toggleAllOCR(this.checked)"> すべて選択</label>
+        <button class="btn btn-primary" style="padding: 8px 14px; font-size: 14px;" onclick="addSelectedOCRStocks()">選択した銘柄を追加</button>
+    </div>`;
 
     stocks.forEach((stock, index) => {
-        const confidenceText = { high: '高', middle: '中', low: '低' }[stock.confidence] || '不明';
+        const confidenceText = { high: '自動入力済み', middle: '一部のみ読取', low: '要入力' }[stock.confidence] || '不明';
         const confidenceColor = { high: '#1E7A4E', middle: '#E09112', low: '#D64545' }[stock.confidence] || '#999';
+        const yieldText = stock.dividend_yield ? `${stock.dividend_yield.toFixed(2)}%` : '—';
 
         html += `
             <div class="ocr-result-item" style="text-align: left;">
                 <div class="ocr-result-header">
-                    <div>
-                        <h4 style="margin: 0;">${escapeHtml(stock.name)} (${stock.code})</h4>
-                        <p style="color: var(--text-sub); font-size: 12px; margin: 4px 0 0 0;">${escapeHtml(stock.sector)} • 配当利回り: ${stock.dividend_yield}%</p>
+                    <div style="display: flex; align-items: flex-start; gap: 10px; min-width: 0;">
+                        <input type="checkbox" class="ocr-select" id="pick_${index}" data-index="${index}" checked style="margin-top: 4px; width: 18px; height: 18px; flex-shrink: 0;">
+                        <div style="min-width: 0;">
+                            <h4 style="margin: 0;">${escapeHtml(stock.name)} (${escapeHtml(stock.code)})</h4>
+                            <p style="color: var(--text-sub); font-size: 12px; margin: 4px 0 0 0;">${escapeHtml(stock.sector)} • 配当利回り: ${yieldText}${shotCount > 1 && stock.image ? ` • ${stock.image}枚目` : ''}</p>
+                        </div>
                     </div>
-                    <span style="background-color: ${confidenceColor}; color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: bold;">信頼度: ${confidenceText}</span>
+                    <span style="background-color: ${confidenceColor}; color: white; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: bold; flex-shrink: 0;">${confidenceText}</span>
                 </div>
-                <div style="margin: 12px 0; border-top: 1px solid #ddd; padding-top: 12px;">
-                    <p style="color: var(--text-sub); font-size: 12px; margin: 0 0 8px 0;">数値を確認・修正してください</p>
+                <div style="margin: 12px 0 0 0; border-top: 1px solid var(--border-color); padding-top: 12px;">
                     <div class="ocr-field">
                         <label>株数 (株)</label>
-                        <input type="number" id="shares_${index}" value="${stock.shares}" min="1">
+                        <input type="number" id="shares_${index}" value="${stock.shares || ''}" min="1" placeholder="要入力">
                     </div>
                     <div class="ocr-field">
                         <label>取得単価 (¥)</label>
                         <input type="number" id="price_${index}" value="${stock.price || ''}" min="1" placeholder="要入力">
                     </div>
                 </div>
-                <button class="btn btn-primary" style="width: 100%;" onclick="addExtractedStock('${stock.code}', ${index})">ポートフォリオに追加</button>
             </div>
         `;
     });
@@ -1965,6 +2298,42 @@ function displayOCRResults(stocks) {
     container.innerHTML = html;
 }
 
+function toggleAllOCR(checked) {
+    document.querySelectorAll('.ocr-select').forEach(cb => { cb.checked = checked; });
+}
+
+// 選択された銘柄をまとめてポートフォリオへ
+function addSelectedOCRStocks() {
+    const picked = Array.from(document.querySelectorAll('.ocr-select')).filter(cb => cb.checked);
+    if (picked.length === 0) { alert('追加する銘柄を選択してください'); return; }
+
+    const entries = [];
+    for (const cb of picked) {
+        const index = parseInt(cb.dataset.index, 10);
+        const stock = OCR_RESULTS[index];
+        if (!stock) continue;
+        const shares = parseInt(document.getElementById(`shares_${index}`).value, 10);
+        const price = parseFloat(document.getElementById(`price_${index}`).value);
+        if (!shares || shares <= 0 || !price || price <= 0) {
+            alert(`${stock.name}(${stock.code}) の株数と取得単価を入力してください`);
+            document.getElementById(!shares ? `shares_${index}` : `price_${index}`).focus();
+            return;
+        }
+        entries.push({ stock, shares, price });
+    }
+
+    for (const e of entries) {
+        const info = getMasterInfo(e.stock.code);
+        addStockToPortfolio(e.stock.code, e.shares, e.price, info ? null : e.stock.name);
+    }
+    const n = entries.length;
+    closeScreenshotModal();
+    switchPage('dashboard');
+    refreshPrices(true);
+    alert(n > 1 ? `${n}銘柄をポートフォリオに追加しました` : `${entries[0].stock.name}を追加しました`);
+}
+
+// 単体追加（後方互換）
 function addExtractedStock(code, index) {
     const shares = parseInt(document.getElementById(`shares_${index}`).value, 10);
     const price = parseFloat(document.getElementById(`price_${index}`).value);
@@ -1974,8 +2343,9 @@ function addExtractedStock(code, index) {
         return;
     }
 
-    addStockToPortfolio(code, shares, price);
-    const name = STOCK_MASTER_DATA[code] ? STOCK_MASTER_DATA[code].name : code;
+    const info = getMasterInfo(code);
+    addStockToPortfolio(code, shares, price, info ? null : `銘柄${code}`);
+    const name = info ? info.name : code;
     alert(`${name}(${code})を追加しました\n株数: ${shares}株\n取得単価: ¥${price.toLocaleString()}`);
     closeScreenshotModal();
     switchPage('dashboard');
@@ -2151,15 +2521,29 @@ document.addEventListener('DOMContentLoaded', function () {
     const screenshotInput = document.getElementById('screenshotInput');
     if (screenshotInput) {
         screenshotInput.addEventListener('change', function (e) {
-            const file = e.target.files[0];
-            if (file) {
+            const files = Array.from(e.target.files || []);
+            const single = document.getElementById('previewImg');
+            const thumbs = document.getElementById('previewThumbs');
+            single.style.display = 'none';
+            if (thumbs) thumbs.innerHTML = '';
+            document.getElementById('extractedStocks').innerHTML = '';
+
+            if (files.length === 1) {
                 const reader = new FileReader();
-                reader.onload = function (event) {
-                    const img = document.getElementById('previewImg');
-                    img.src = event.target.result;
-                    img.style.display = 'block';
-                };
-                reader.readAsDataURL(file);
+                reader.onload = ev => { single.src = ev.target.result; single.style.display = 'block'; };
+                reader.readAsDataURL(files[0]);
+            } else if (files.length > 1 && thumbs) {
+                // 複数枚はサムネイル一覧で表示
+                files.forEach((file, i) => {
+                    const reader = new FileReader();
+                    reader.onload = ev => {
+                        const wrap = document.createElement('div');
+                        wrap.className = 'preview-thumb';
+                        wrap.innerHTML = `<img src="${ev.target.result}" alt=""><span>${i + 1}</span>`;
+                        thumbs.appendChild(wrap);
+                    };
+                    reader.readAsDataURL(file);
+                });
             }
         });
     }

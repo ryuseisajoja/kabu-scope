@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=7">
+    <link rel="stylesheet" href="style.css?v=8">
     <script async src="https://cdn.jsdelivr.net/npm/tesseract.js@v5.0.4/dist/tesseract.min.js"></script>
 </head>
 <body>
@@ -340,14 +340,27 @@
         </div>
         <div class="modal-body">
             <div class="screenshot-area">
-                <p style="text-align: center; color: var(--text-sub); margin-bottom: 20px;">証券会社のスクショから、自動で銘柄情報を読み込みます</p>
-                <input type="file" id="screenshotInput" accept="image/*" style="margin-bottom: 20px;">
+                <p style="text-align: center; color: var(--text-sub); margin-bottom: 16px;">証券会社のスクショから、自動で銘柄情報を読み込みます（複数枚まとめてOK）</p>
+                <div class="shot-guide">
+                    <p class="shot-guide-title">株数・取得単価まで自動で入れるには「保有銘柄一覧」の画面を</p>
+                    <p class="shot-guide-body">
+                        証券アプリの<strong>「保有商品・ポートフォリオ」画面</strong>で、<strong>保有数量</strong>と<strong>取得単価（平均取得価額）</strong>の数字が写るように撮ってください。この2つが画面に写っていれば、何も入力せず自動で取り込めます。
+                    </p>
+                    <p class="shot-guide-note">
+                        <strong>お気に入り・ランキング・株価一覧の画面は不可</strong>：現在値と前日比しか載っていないため、株数と取得単価はどこにも書かれておらず読み取れません（銘柄だけ取り込んで数量は手入力になります）。<br>
+                        SBI証券なら「口座管理 &gt; 保有証券」、楽天証券なら「保有商品一覧」、マネックスなら「保有残高」の画面が該当します。金額が隠れる設定（資産非表示）はオフにしてから撮影してください。<br>
+                        文字が小さいと読み取りに失敗しやすいので、画面を拡大してから撮るか、数銘柄ずつ分けて撮って複数枚選ぶと精度が上がります。「相談」ページでAPIキーを設定していると、より精度の高い画像認識で読み取ります。
+                    </p>
+                </div>
+                <input type="file" id="screenshotInput" accept="image/*" multiple style="margin-bottom: 8px;">
+                <p style="font-size: 12px; color: var(--text-sub); margin: 0 0 16px 0;">複数選択できます（スクロールして何枚かに分けて撮った場合もまとめて読み込みます）</p>
                 <div id="screenshotPreview" style="margin-bottom: 20px;">
                     <img id="previewImg" style="max-width: 100%; border-radius: 8px; display: none;">
+                    <div id="previewThumbs" class="preview-thumbs"></div>
                 </div>
                 <div id="ocrStatus" style="display: none; margin-bottom: 20px;">
                     <div style="background-color: var(--primary-light); padding: 16px; border-radius: 8px; text-align: center;">
-                        <p id="statusText" style="color: var(--primary-color); font-weight: bold;">OCR処理中...</p>
+                        <p id="statusText" style="color: var(--primary-color); font-weight: bold;">読み取り中...</p>
                         <div id="progressBar" style="margin-top: 12px; height: 8px; background-color: white; border-radius: 4px; overflow: hidden;">
                             <div style="height: 100%; background-color: var(--primary-color); width: 0%; animation: progress 2s ease-in-out infinite;"></div>
                         </div>
@@ -400,6 +413,6 @@
             <button class="btn btn-primary" onclick="submitManualAdd()"><span id="manualSubmitLabel">追加する</span></button>
         </div>
     </div>
-    <script src="main.js?v=7"></script>
+    <script src="main.js?v=8"></script>
 </body>
 </html>
