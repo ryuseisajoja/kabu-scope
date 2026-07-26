@@ -2050,13 +2050,15 @@ async function performOCR() {
         try {
             statusEl.textContent = `${label}画像を処理中...`;
             const source = await preprocessImageForOCR(files[i]).catch(() => files[i]);
-            const { data: { text } } = await Tesseract.recognize(source, 'jpn+eng', {
+            const { data } = await Tesseract.recognize(source, 'jpn+eng', {
                 logger: m => {
                     if (m.status === 'recognizing text') {
                         statusEl.textContent = `${label}読み取り中... ${(m.progress * 100).toFixed(0)}%`;
                     }
                 }
-            });
+            }, { blocks: true, text: true });
+            // 単語座標から行を組み直したものを優先（表形式で列が分断されるのを防ぐ）
+            const text = wordsToLines(collectOcrWords(data)) || data.text;
             for (const s of parseStockInfoFromText(text)) {
                 mergeOCRStock(merged, s, i + 1);
             }
@@ -2163,23 +2165,100 @@ function pickNumber(windowText, patterns) {
     return 0;
 }
 
+// Tesseractのバージョンによって単語データの位置が違うため、どの形でも取り出せるようにする
+function collectOcrWords(data) {
+    if (!data) return [];
+    if (Array.isArray(data.words) && data.words.length) return data.words;
+    const out = [];
+    const walk = node => {
+        if (!node || typeof node !== 'object') return;
+        if (Array.isArray(node.words)) out.push(...node.words);
+        for (const key of ['blocks', 'paragraphs', 'lines']) {
+            if (Array.isArray(node[key])) node[key].forEach(walk);
+        }
+    };
+    walk(data);
+    return out;
+}
+
+// OCRの単語座標から行を組み直す。
+// 縦長のスクショで列の間隔が広いと、Tesseractは列ごとに別ブロックとして出力してしまい
+// 「銘柄名」と「数量・取得単価」が別の行に分かれてしまうため、Y座標で行をまとめ直す
+function wordsToLines(words) {
+    const items = [];
+    for (const w of words || []) {
+        const t = (w.text || '').trim();
+        if (!t || !w.bbox) continue;
+        items.push({
+            text: t,
+            x: w.bbox.x0,
+            yc: (w.bbox.y0 + w.bbox.y1) / 2,
+            h: Math.max(1, w.bbox.y1 - w.bbox.y0)
+        });
+    }
+    if (items.length === 0) return null;
+
+    const heights = items.map(i => i.h).sort((a, b) => a - b);
+    const medianH = heights[Math.floor(heights.length / 2)];
+    const tol = Math.max(6, medianH * 0.6); // 同じ行と見なす縦のズレ
+
+    items.sort((a, b) => a.yc - b.yc);
+    const rows = [];
+    for (const it of items) {
+        const row = rows[rows.length - 1];
+        if (row && Math.abs(it.yc - row.yc) <= tol) {
+            row.items.push(it);
+            row.yc = row.items.reduce((s, v) => s + v.yc, 0) / row.items.length;
+        } else {
+            rows.push({ yc: it.yc, items: [it] });
+        }
+    }
+    return rows.map(r => r.items.sort((a, b) => a.x - b.x).map(i => i.text).join(' ')).join('\n');
+}
+
 // OCRは「保有 数 量」「平均 取得 価額」のように単語内へ空白を入れてくる。
 // 項目名を照合できるよう空白を詰めるが、「1 636.00」のような数字と数字の間は残す
 function squeezeLabelSpaces(text) {
     return text.replace(/(\D)[ \t]+/g, '$1').replace(/[ \t]+(\D)/g, '$1');
 }
 
-// 行に含まれる数値トークンを取り出す（小数付きかどうかも返す）
+// 数値トークンの解釈。OCRはカンマとピリオドを混同するため（「1,371.57」→「1.371.57」）、
+// 末尾の1〜2桁だけを小数部と見なし、それ以外の区切りは桁区切りとして扱う
+function parseNumericToken(raw) {
+    const parts = raw.split(/[.,]/);
+    if (parts.length === 1) return { value: parseInt(raw, 10), hasDecimal: false };
+    const last = parts[parts.length - 1];
+    const head = parts.slice(0, -1).join('');
+    if (head.length > 0 && last.length >= 1 && last.length <= 2) {
+        return { value: parseFloat(head + '.' + last), hasDecimal: true };
+    }
+    return { value: parseInt(parts.join(''), 10), hasDecimal: false };
+}
+
+// 行に含まれる数値トークンを取り出す。
+// 符号付き（前日比・評価損益の「+96」「-1,142」）と率（%）は保有情報ではないので区別する
 function numberTokens(line) {
     const out = [];
-    const re = /\d[\d,]*(?:\.\d+)?/g;
+    const re = /([+\-−▲△])?\s*(\d[\d.,]*\d|\d)\s*([%％])?/g;
     let m;
     while ((m = re.exec(line)) !== null) {
-        const raw = m[0];
-        const v = parseFloat(raw.replace(/,/g, ''));
-        if (!isNaN(v)) out.push({ raw, value: v, hasDecimal: raw.includes('.') });
+        const raw = m[2];
+        const parsed = parseNumericToken(raw);
+        if (isNaN(parsed.value)) continue;
+        out.push({
+            raw,
+            value: parsed.value,
+            hasDecimal: parsed.hasDecimal,
+            signed: !!m[1],
+            percent: !!m[3]
+        });
     }
     return out;
+}
+
+// 保有情報として使える数値だけ（符号付き・率・銘柄コード自身を除く）
+function holdingTokens(line, code) {
+    return numberTokens(line).filter(n => !n.signed && !n.percent && n.raw !== code);
 }
 
 function parseStockInfoFromText(rawText) {
@@ -2189,8 +2268,11 @@ function parseStockInfoFromText(rawText) {
     const processedCodes = new Set();
 
     // 「保有数量」「平均取得価額」が列見出しになっている表形式の画面か
-    // （行ごとに単位が付かず数字だけ並ぶため、位置で読む必要がある）
-    const tableMode = /保有数量|平均取得価額|平均取得単価|取得単価|保有株数|取得価額/.test(squeezeLabelSpaces(text));
+    // （行ごとに単位が付かず数字だけ並ぶため、位置で読む必要がある）。
+    // 見出しは小さいグレー文字でOCRに失敗しやすいので、明細行の並びからも判定する
+    const headerHint = /保有数量|平均取得価額|平均取得単価|取得単価|保有株数|取得価額/.test(squeezeLabelSpaces(text));
+    const rowLike = lines.filter(l => !/[円%％]/.test(l) && isRowStartLine(l) && holdingTokens(l, null).length >= 2).length;
+    const tableMode = headerHint || rowLike >= 2;
 
     const pushStock = (code, windowText) => {
         if (!code || processedCodes.has(code)) return;
@@ -2222,19 +2304,30 @@ function parseStockInfoFromText(rawText) {
         if (tableMode && (!shares || !price)) {
             for (const l of windowText.split('\n')) {
                 if (/[円%％]/.test(l)) continue; // 「+96円」「(+1.68%)」など単位付きの行は対象外
-                const nums = numberTokens(l).filter(n => n.raw !== code);
+                const nums = holdingTokens(l, code);
                 if (nums.length < 2) continue;
-                const dec = nums.find(n => n.hasDecimal);
-                if (!dec) continue; // 小数が無い行は「執行中 0 / 現在値」の行なので使わない
-                const qty = nums.find(n => !n.hasDecimal && n.value > 0 && n !== dec);
+                let dec = nums.find(n => n.hasDecimal);
+                let qty = dec ? nums.find(n => !n.hasDecimal && n.value > 0 && n !== dec) : null;
+
+                // 取得単価を小数で表示しない証券会社向け：
+                // 銘柄名で始まる行に数値が2つだけなら「数量・取得単価」の並びとして扱う
+                if (!dec && isRowStartLine(l) && nums.length === 2 && nums[0].value > 0) {
+                    qty = nums[0];
+                    dec = nums[1];
+                }
+
                 // 数量と単価が揃っている行だけを採用する。
                 // 「9432 0 151.3」のようなコード行を拾って現在値を取得単価と誤認しないため
-                if (!qty) continue;
+                if (!dec || !qty) continue;
                 if (!shares) shares = qty.value;
                 if (!price) price = dec.value;
                 break;
             }
         }
+
+        // 明らかにあり得ない値は読み取り失敗として扱い、入力を促す
+        if (!(shares > 0 && shares <= 10000000)) shares = 0;
+        if (!(price >= 1)) price = 0;
 
         // 利回りは市場価格基準の値を表示する（取得単価を渡すと利回りが実態とずれる）
         const div = getDividendInfo(code);
