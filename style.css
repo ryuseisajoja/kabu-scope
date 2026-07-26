@@ -331,7 +331,8 @@ body { background-color: var(--bg-color); color: var(--text-main); display: flex
     .btn { min-height: 44px; padding: 11px 15px; font-size: 14px; }
     .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .btn-group .btn { width: 100%; justify-content: center; }
-    .btn-group .btn:first-child { grid-column: 1 / -1; }
+    /* ボタンが3つのときだけ1つ目を全幅にする（2つのときは半分ずつ並べる） */
+    .btn-group .btn:first-child:nth-last-child(3) { grid-column: 1 / -1; }
 
     /* モーダルは全画面シートにする。display は JS が切り替えるので指定しない
        （ここで display を書くと閉じているモーダルまで表示されてしまう） */

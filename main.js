@@ -464,8 +464,20 @@ function getPriceCache() {
     return JSON.parse(localStorage.getItem(PRICE_CACHE_KEY) || '{}');
 }
 
+// ===== 株価の取得元（自前の中継サーバーを設定できるようにする） =====
+const PROXY_STORAGE_KEY = 'priceProxyBase';
+
+function getPriceProxyBase() {
+    const v = localStorage.getItem(PROXY_STORAGE_KEY) || '';
+    return v.replace(/\/+$/, '');
+}
+
+function priceApiBase() {
+    return getPriceProxyBase() || 'https://query1.finance.yahoo.com';
+}
+
 async function fetchQuote(code) {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${code}.T?range=1d&interval=1d`;
+    const url = `${priceApiBase()}/v8/finance/chart/${code}.T?range=1d&interval=1d`;
     const res = await fetch(url);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const json = await res.json();
@@ -803,6 +815,7 @@ function updateDashboard() {
     set('kpiConcentrationSub', `${top.name} ・ 全${portfolio.length}銘柄`);
 
     updateStockTable(portfolio);
+    updateDataSettingsUI();
     savePortfolioSnapshot();
     checkAlerts();
     renderAlerts();
@@ -2931,8 +2944,127 @@ function clearOldAlerts() {
     localStorage.setItem('alerts', JSON.stringify(ALERTS));
 }
 
+// ===== データのバックアップ（この端末のブラウザ内にしか保存されないため） =====
+const BACKUP_KEYS = ['portfolio', 'portfolio_history', 'alerts'];
+
+function updateDataSettingsUI() {
+    const status = document.getElementById('dataStatus');
+    if (status) {
+        const portfolio = getPortfolio();
+        let history = [];
+        try { history = JSON.parse(localStorage.getItem('portfolio_history') || '[]'); } catch (e) { history = []; }
+        const last = portfolio.length > 0 ? portfolio.reduce((m, s) => Math.max(m, s.addedAt ? new Date(s.addedAt).getTime() : 0), 0) : 0;
+        status.textContent = portfolio.length === 0
+            ? '保存されている銘柄はまだありません。'
+            : `保存中: ${portfolio.length}銘柄 ・ 資産推移の記録 ${history.length}日分${last ? ` ・ 最終更新 ${new Date(last).toLocaleDateString('ja-JP')}` : ''}`;
+    }
+
+    const input = document.getElementById('proxyBaseInput');
+    const proxyStatus = document.getElementById('proxyStatus');
+    const base = getPriceProxyBase();
+    if (input && document.activeElement !== input) input.value = base;
+    if (proxyStatus) {
+        proxyStatus.textContent = base
+            ? `現在の取得元: ${base}（保有銘柄の株価をその都度取得します）`
+            : '現在の取得元: 当サイトの株価スナップショット（未設定）';
+    }
+}
+
+function exportAppData() {
+    const data = { app: 'kabu-scope', version: 1, exported: new Date().toISOString() };
+    for (const key of BACKUP_KEYS) {
+        const raw = localStorage.getItem(key);
+        if (raw === null) continue;
+        try { data[key] = JSON.parse(raw); } catch (e) { data[key] = raw; }
+    }
+    // APIキーは意図的に含めない（ファイルが流出したときに悪用されるため）
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const d = new Date();
+    const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    a.href = url;
+    a.download = `kabuscope-backup-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function importAppData(input) {
+    const file = input && input.files && input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onerror = () => { alert('ファイルを読み込めませんでした'); input.value = ''; };
+    reader.onload = e => {
+        input.value = '';
+        let data;
+        try {
+            data = JSON.parse(e.target.result);
+        } catch (err) {
+            alert('このファイルは読み込めません（JSON形式ではありません）');
+            return;
+        }
+        if (!data || data.app !== 'kabu-scope' || !Array.isArray(data.portfolio)) {
+            alert('カブスコープのバックアップファイルではないようです');
+            return;
+        }
+        const current = getPortfolio();
+        const msg = current.length > 0
+            ? `現在の${current.length}銘柄を、バックアップの${data.portfolio.length}銘柄で置き換えます。\n（書き出した日時: ${data.exported ? new Date(data.exported).toLocaleString('ja-JP') : '不明'}）\n続けますか？`
+            : `バックアップから${data.portfolio.length}銘柄を復元します。続けますか？`;
+        if (!confirm(msg)) return;
+
+        for (const key of BACKUP_KEYS) {
+            if (data[key] === undefined) continue;
+            localStorage.setItem(key, JSON.stringify(data[key]));
+        }
+        alert(`${data.portfolio.length}銘柄を復元しました`);
+        switchPage('dashboard');
+        updateDashboard();
+        updateDataSettingsUI();
+        refreshPrices(true);
+    };
+    reader.readAsText(file);
+}
+
+async function savePriceProxy() {
+    const input = document.getElementById('proxyBaseInput');
+    if (!input) return;
+    const raw = input.value.trim().replace(/\/+$/, '');
+    if (!raw) { alert('URLを入力してください'); return; }
+    if (!/^https:\/\/[^\s]+$/.test(raw)) { alert('httpsで始まるURLを入力してください'); return; }
+
+    const status = document.getElementById('proxyStatus');
+    if (status) status.textContent = '接続を確認しています...';
+    try {
+        const res = await fetch(`${raw}/v8/finance/chart/7203.T?range=1d&interval=1d`);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const json = await res.json();
+        const price = json && json.chart && json.chart.result && json.chart.result[0] &&
+            json.chart.result[0].meta && json.chart.result[0].meta.regularMarketPrice;
+        if (typeof price !== 'number') throw new Error('株価を取得できませんでした');
+        localStorage.setItem(PROXY_STORAGE_KEY, raw);
+        updateDataSettingsUI();
+        alert(`接続できました（トヨタ自動車の株価: ¥${price.toLocaleString()}）\n今後は保有銘柄の株価をこのURL経由で取得します。`);
+        refreshPrices(true);
+    } catch (e) {
+        if (status) status.textContent = `接続できませんでした: ${e.message}`;
+        alert(`接続できませんでした（${e.message}）\nURLとCORS設定を確認してください。設定は保存していません。`);
+    }
+}
+
+function clearPriceProxy() {
+    if (!confirm('株価の取得元の設定を消して、標準のスナップショットに戻しますか？')) return;
+    localStorage.removeItem(PROXY_STORAGE_KEY);
+    const input = document.getElementById('proxyBaseInput');
+    if (input) input.value = '';
+    updateDataSettingsUI();
+}
+
 // ===== 初期化 =====
 document.addEventListener('DOMContentLoaded', function () {
+    updateDataSettingsUI();
     const screenshotInput = document.getElementById('screenshotInput');
     if (screenshotInput) {
         screenshotInput.addEventListener('change', function (e) {
