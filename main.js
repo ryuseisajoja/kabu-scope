@@ -1860,13 +1860,22 @@ function preprocessImageForOCR(file) {
                 ctx.imageSmoothingEnabled = true;
                 ctx.imageSmoothingQuality = 'high';
                 ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                // グレースケール＋コントラスト強調
+                // グレースケール＋コントラスト強調。
+                // ダークモードのスクショ（黒背景・白文字）はOCRがほぼ読めないため白黒反転する
                 try {
                     const d = ctx.getImageData(0, 0, canvas.width, canvas.height);
                     const px = d.data;
+                    let sum = 0;
                     for (let i = 0; i < px.length; i += 4) {
                         const g = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
-                        const v = Math.max(0, Math.min(255, (g - 128) * 1.35 + 128));
+                        px[i] = g;
+                        sum += g;
+                    }
+                    const mean = sum / (px.length / 4);
+                    const invert = mean < 115; // 全体が暗い＝ダークモード
+                    for (let i = 0; i < px.length; i += 4) {
+                        let v = invert ? 255 - px[i] : px[i];
+                        v = Math.max(0, Math.min(255, (v - 128) * 1.35 + 128));
                         px[i] = px[i + 1] = px[i + 2] = v;
                     }
                     ctx.putImageData(d, 0, 0);
@@ -1927,8 +1936,11 @@ async function extractStocksWithClaude(files, statusEl) {
 - name: 画面に表示されている銘柄名。
 - shares: 保有数量（株数）。画面に書かれていなければ null。推測は禁止。
 - price: 取得単価（平均取得価額）。画面に書かれていなければ null。推測は禁止。
-- 「現在値」「株価」「評価額」「前日比」は取得単価ではありません。取得単価として使わないこと。
+- 「現在値」「株価」「評価額」「前日比」「執行中」は取得単価ではありません。取得単価として使わないこと。
 - 取得単価が無く「取得金額（総額）」がある場合は price を null にし、totalCost にその金額を入れてください。
+- 表形式で1銘柄が2行に分かれている画面（1行目に銘柄名・保有数量・平均取得価額、2行目に銘柄コード・執行中・現在値）では、price には「平均取得価額」の列の値を入れ、「現在値」や「執行中」の0は使わないこと。
+- 銘柄名が「日本Ｍ＆Ａセ…」のように省略されていても、銘柄コードから正式名称を判断してください。
+- 保有数量が1株や7株のような少ない株数でもそのまま出力してください（100株単位に丸めない）。
 - お気に入りや株価一覧など保有情報が無い画面では、code と name だけ埋めて shares と price は null にしてください。
 - 画面に写っている銘柄すべてを、上から順に出力してください。`;
 
@@ -1967,7 +1979,7 @@ async function extractStocksWithClaude(files, statusEl) {
         let price = Number(s.price) > 0 ? Number(s.price) : 0;
         if (!price && shares && Number(s.totalCost) > 0) price = Math.round(Number(s.totalCost) / shares);
 
-        const div = getDividendInfo(code, price);
+        const div = getDividendInfo(code); // 利回りは市場価格基準
         out.push({
             code, name: info.name, sector: info.sector, shares, price,
             confidence: (shares && price) ? 'high' : (shares || price) ? 'middle' : 'low',
@@ -2093,7 +2105,8 @@ function buildNameIndex() {
         .replace(/[０-９Ａ-Ｚａ-ｚ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
         .replace(/＆/g, '&')
         .replace(/株式会社/g, '')
-        .replace(/[\s・･,，.。()（）「」]/g, '')
+        // 一覧画面の省略記号（日本Ｍ＆Ａセ… など）も取り除く
+        .replace(/[\s・･,，.。()（）「」…‥⋯]/g, '')
         .toUpperCase();
     const dashes = s => s.replace(/[ー－―‐]/g, '-');
     // 「ホールディングス」等の表記ゆれを畳んだ形（照合用）
@@ -2106,11 +2119,11 @@ function buildNameIndex() {
         const n = norm(name);
         if (n.length >= 3) NAME_INDEX.push([n, normRaw(name), code]);
     };
+    // 厳選マスターは通称（「ホンダ」「JT」）のことがあるため、
+    // 全銘柄マスターの正式名称（「本田技研工業」「日本たばこ産業」）も別名として登録する
     for (const [code, d] of Object.entries(STOCK_MASTER_DATA)) add(code, d.name);
     if (FULL_MASTER) {
-        for (const [code, arr] of Object.entries(FULL_MASTER)) {
-            if (!STOCK_MASTER_DATA[code]) add(code, arr[0]);
-        }
+        for (const [code, arr] of Object.entries(FULL_MASTER)) add(code, arr[0]);
     }
     // 長い名前を優先（「三菱UFJ」より「三菱UFJフィナンシャルHD」を先に当てる）
     NAME_INDEX.sort((a, b) => b[0].length - a[0].length);
@@ -2122,15 +2135,17 @@ function buildNameIndex() {
 function findCodeByName(line) {
     const idx = buildNameIndex();
     const target = idx.normalize(line);
-    if (target.length < 3) return null;
-    for (const [name, , code] of idx) {
-        if (target.includes(name)) return code;
+    if (target.length >= 3) {
+        for (const [name, , code] of idx) {
+            if (target.includes(name)) return code;
+        }
     }
-    // 一覧画面では銘柄名が途中で切れることが多い（例「日本M&Aセンターホールデ」）ので前方一致も試す
-    const raw = idx.normalizeRaw(line);
-    if (raw.length >= 6) {
+    // 一覧画面では銘柄名が「日本Ｍ＆Ａセ…」のように途中で切れ、右に数量や株価が続く。
+    // 先頭の数字より前だけを取り出して前方一致で照合する
+    const head = idx.normalizeRaw(String(line).split(/\d/)[0]);
+    if (head.length >= 4) {
         for (const [, rawName, code] of idx) {
-            if (rawName.startsWith(raw)) return code;
+            if (rawName.startsWith(head)) return code;
         }
     }
     return null;
@@ -2148,11 +2163,34 @@ function pickNumber(windowText, patterns) {
     return 0;
 }
 
+// OCRは「保有 数 量」「平均 取得 価額」のように単語内へ空白を入れてくる。
+// 項目名を照合できるよう空白を詰めるが、「1 636.00」のような数字と数字の間は残す
+function squeezeLabelSpaces(text) {
+    return text.replace(/(\D)[ \t]+/g, '$1').replace(/[ \t]+(\D)/g, '$1');
+}
+
+// 行に含まれる数値トークンを取り出す（小数付きかどうかも返す）
+function numberTokens(line) {
+    const out = [];
+    const re = /\d[\d,]*(?:\.\d+)?/g;
+    let m;
+    while ((m = re.exec(line)) !== null) {
+        const raw = m[0];
+        const v = parseFloat(raw.replace(/,/g, ''));
+        if (!isNaN(v)) out.push({ raw, value: v, hasDecimal: raw.includes('.') });
+    }
+    return out;
+}
+
 function parseStockInfoFromText(rawText) {
     const text = normalizeOcrText(rawText);
     const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     const stocks = [];
     const processedCodes = new Set();
+
+    // 「保有数量」「平均取得価額」が列見出しになっている表形式の画面か
+    // （行ごとに単位が付かず数字だけ並ぶため、位置で読む必要がある）
+    const tableMode = /保有数量|平均取得価額|平均取得単価|取得単価|保有株数|取得価額/.test(squeezeLabelSpaces(text));
 
     const pushStock = (code, windowText) => {
         if (!code || processedCodes.has(code)) return;
@@ -2160,23 +2198,46 @@ function parseStockInfoFromText(rawText) {
         if (!info) return;
         processedCodes.add(code);
 
+        // 項目名の照合はOCRが入れた空白を詰めたテキストで行う
+        const labelText = squeezeLabelSpaces(windowText);
+
         // 株数：「保有数量 100」「100株」などラベル付きを優先
-        const shares = pickNumber(windowText, [
+        let shares = pickNumber(labelText, [
             /(?:保有)?(?:数量|株数|口数|保有株数)[^\d\n]{0,8}([\d,]+)/,
             /([\d,]{1,9})\s*(?:株|口)(?![式数])/
         ]);
         // 取得単価：「取得単価」「平均取得価額」を優先。現在値・評価額は取得単価ではないので使わない
-        let price = pickNumber(windowText, [
+        let price = pickNumber(labelText, [
             /(?:平均)?取得(?:単価|価額|価格)[^\d\n]{0,10}¥?\s*([\d,]+(?:\.\d+)?)/,
             /(?:平均)?(?:買付|買付け)?(?:単価|コスト)[^\d\n]{0,8}¥?\s*([\d,]+(?:\.\d+)?)/
         ]);
         // 取得単価がなく「取得金額（総額）」がある場合は割り戻す
         if (!price && shares) {
-            const total = pickNumber(windowText, [/取得(?:金額|額|総額)[^\d\n]{0,10}¥?\s*([\d,]+)/]);
+            const total = pickNumber(labelText, [/取得(?:金額|額|総額)[^\d\n]{0,10}¥?\s*([\d,]+)/]);
             if (total) price = Math.round(total / shares);
         }
 
-        const div = getDividendInfo(code, price);
+        // ラベルが行に付かない表形式（例：「日本Ｍ＆Ａセ… 1 636.00」）は位置で読む。
+        // 平均取得価額は小数付き（636.00）で表示されるため、それを手がかりに数量と単価を決める
+        if (tableMode && (!shares || !price)) {
+            for (const l of windowText.split('\n')) {
+                if (/[円%％]/.test(l)) continue; // 「+96円」「(+1.68%)」など単位付きの行は対象外
+                const nums = numberTokens(l).filter(n => n.raw !== code);
+                if (nums.length < 2) continue;
+                const dec = nums.find(n => n.hasDecimal);
+                if (!dec) continue; // 小数が無い行は「執行中 0 / 現在値」の行なので使わない
+                const qty = nums.find(n => !n.hasDecimal && n.value > 0 && n !== dec);
+                // 数量と単価が揃っている行だけを採用する。
+                // 「9432 0 151.3」のようなコード行を拾って現在値を取得単価と誤認しないため
+                if (!qty) continue;
+                if (!shares) shares = qty.value;
+                if (!price) price = dec.value;
+                break;
+            }
+        }
+
+        // 利回りは市場価格基準の値を表示する（取得単価を渡すと利回りが実態とずれる）
+        const div = getDividendInfo(code);
         stocks.push({
             code,
             name: info.name,
@@ -2193,23 +2254,42 @@ function parseStockInfoFromText(rawText) {
     const codeAt = lines.map(line => {
         const byCode = findCodeInLine(line);
         if (byCode) return byCode;
-        if (/[ぁ-んァ-ヶ一-龠]/.test(line)) return findCodeByName(line);
+        // 銘柄名の行（日本語だけでなく「ＮＴＴ」のような英字表記もある）
+        if (/[ぁ-んァ-ヶ一-龠]/.test(line) || /[A-Za-zＡ-Ｚａ-ｚ]{3}/.test(line)) return findCodeByName(line);
         return null;
     });
 
-    // 2) 銘柄ごとに、次の銘柄が現れる前までを窓として数値を拾う
-    //    （窓が次の行にはみ出すと隣の銘柄の株数・単価を取り違えるため上限も設ける）
+    // 2) 銘柄ごとに、次の銘柄の行が現れる前までを窓として数値を拾う
+    //    （窓がはみ出すと隣の銘柄の株数・単価を取り違えるため境界を厳しく取る）
+    let consumedUntil = 0;
     for (let i = 0; i < lines.length; i++) {
         const code = codeAt[i];
         if (!code || processedCodes.has(code)) continue;
+
         let end = Math.min(lines.length, i + 5);
         for (let j = i + 1; j < end; j++) {
-            if (codeAt[j] && codeAt[j] !== code) { end = j; break; }
+            if (codeAt[j] && codeAt[j] !== code) { end = j; break; } // 次の銘柄
+            if (isRowStartLine(lines[j])) { end = j; break; }        // 次の行（銘柄名＋数値）
         }
-        pushStock(code, lines.slice(i, end).join('\n'));
+
+        // 表形式では数値が銘柄コードの1行上に並ぶ（「本田技研 7 1,371.57」→「7267 0 1,536」）。
+        // 直前の行がまだどの銘柄にも使われていなければ窓に含める
+        let start = i;
+        if (tableMode && i - 1 >= consumedUntil && !codeAt[i - 1]) start = i - 1;
+
+        pushStock(code, lines.slice(start, end).join('\n'));
+        consumedUntil = end;
     }
 
     return stocks;
+}
+
+// 「日本製鉄 10 570.00」のような“銘柄1行分”の始まりか（項目名で始まる行は除く）
+function isRowStartLine(line) {
+    if (!/\d/.test(line)) return false;
+    const head = squeezeLabelSpaces(line.split(/\d/)[0]).trim();
+    if (head.length < 2) return false;
+    return !/数量|株数|単価|価額|金額|現在値|評価|損益|前日|口数|預り|合計|時価|利回り|配当|取得/.test(head);
 }
 
 // 行の中から銘柄コードらしい文字列（4桁数字 or 3桁数字+英字の新形式）を探す。
