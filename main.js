@@ -712,6 +712,24 @@ async function refreshPrices(force = false) {
 }
 
 // ===== ページ切り替え =====
+// ===== スマホ用メニュー =====
+function openMobileMenu() {
+    document.getElementById('mobileMenuBackdrop').classList.add('open');
+    document.getElementById('mobileMenuSheet').classList.add('open');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeMobileMenu() {
+    document.getElementById('mobileMenuBackdrop').classList.remove('open');
+    document.getElementById('mobileMenuSheet').classList.remove('open');
+    document.body.style.overflow = '';
+}
+
+function goToPage(pageId) {
+    closeMobileMenu();
+    switchPage(pageId);
+}
+
 function switchPage(pageId) {
     document.querySelectorAll('.page-section').forEach(section => section.classList.remove('active'));
     const target = document.getElementById(pageId);
@@ -725,9 +743,13 @@ function switchPage(pageId) {
     }
 
     document.querySelectorAll('.bottom-nav-item').forEach(item => item.classList.remove('active'));
-    const bottomNavIndex = { 'dashboard': 0, 'ai-analysis': 1, 'ai-chat': 2, 'guide': 3 };
-    if (bottomNavIndex[pageId] !== undefined) {
-        document.querySelectorAll('.bottom-nav-item')[bottomNavIndex[pageId]].classList.add('active');
+    const bottomNavIndex = { 'dashboard': 0, 'ai-analysis': 1, 'ai-chat': 2, 'dividend': 3 };
+    const items = document.querySelectorAll('.bottom-nav-item');
+    if (bottomNavIndex[pageId] !== undefined && items[bottomNavIndex[pageId]]) {
+        items[bottomNavIndex[pageId]].classList.add('active');
+    } else if (items.length) {
+        // 下部ナビに無いページ（ポートフォリオ・資産推移など）は「メニュー」を選択状態にする
+        items[items.length - 1].classList.add('active');
     }
 
     if (pageId === 'dashboard') updateDashboard();
@@ -743,24 +765,42 @@ function switchPage(pageId) {
 // ===== ダッシュボード =====
 function updateDashboard() {
     const portfolio = getPortfolio();
-    const statValues = document.querySelectorAll('#dashboard .stat-value');
+    const set = (id, text, color) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = text;
+        if (color) el.style.color = color;
+    };
 
     if (portfolio.length === 0) {
-        if (statValues[0]) statValues[0].textContent = '0 銘柄';
-        if (statValues[1]) statValues[1].textContent = '¥0';
-        if (statValues[2]) statValues[2].textContent = '- %';
+        set('kpiValue', '¥0');
+        set('kpiGain', '¥0', 'var(--text-main)');
+        set('kpiGainSub', '');
+        set('kpiDividend', '¥0');
+        set('kpiDividendSub', '');
+        set('kpiConcentration', '- %');
+        set('kpiConcentrationSub', '');
         updateStockTable(portfolio);
         renderAlerts();
         return;
     }
 
-    const totalValue = portfolio.reduce((sum, s) => sum + s.acquisitionPrice * s.shares, 0);
+    const cost = portfolio.reduce((sum, s) => sum + s.acquisitionPrice * s.shares, 0);
     const currentValue = portfolio.reduce((sum, s) => sum + s.currentPrice * s.shares, 0);
-    const maxConcentration = Math.max(...portfolio.map(s => (s.currentPrice * s.shares) / currentValue)) * 100;
+    const gain = currentValue - cost;
+    const gainPct = cost > 0 ? (gain / cost) * 100 : 0;
+    const top = [...portfolio].sort((a, b) => (b.currentPrice * b.shares) - (a.currentPrice * a.shares))[0];
+    const maxConcentration = currentValue > 0 ? (top.currentPrice * top.shares) / currentValue * 100 : 0;
+    const div = simulateDividendIncome(1);
+    const divYield = currentValue > 0 ? (div.annual / currentValue) * 100 : 0;
 
-    if (statValues[0]) statValues[0].textContent = portfolio.length + ' 銘柄';
-    if (statValues[1]) statValues[1].textContent = formatYen(currentValue);
-    if (statValues[2]) statValues[2].textContent = maxConcentration.toFixed(1) + ' %';
+    set('kpiValue', formatYen(currentValue));
+    set('kpiGain', (gain >= 0 ? '+' : '-') + formatYen(Math.abs(gain)), gain >= 0 ? 'var(--gain)' : 'var(--loss)');
+    set('kpiGainSub', `${gain >= 0 ? '+' : ''}${gainPct.toFixed(1)}% ・ 取得 ${formatYen(cost)}`);
+    set('kpiDividend', formatYen(div.annual));
+    set('kpiDividendSub', `月あたり約${formatYen(div.monthly)} ・ 利回り${divYield.toFixed(2)}%`);
+    set('kpiConcentration', maxConcentration.toFixed(1) + ' %');
+    set('kpiConcentrationSub', `${top.name} ・ 全${portfolio.length}銘柄`);
 
     updateStockTable(portfolio);
     savePortfolioSnapshot();
@@ -800,6 +840,60 @@ function updateStockTable(portfolio) {
                 <button style="background: none; border: none; cursor: pointer; color: var(--text-sub); display: inline-flex; align-items: center;" onclick="removeStockFromPortfolio('${escapeHtml(stock.code)}')" title="削除"><svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
             </td>
         </tr>`;
+    }).join('');
+
+    renderHoldingCards(portfolio);
+}
+
+// スマホ用の保有銘柄カード（表は列が潰れて読めないため、同じ情報をカードで出す）
+function renderHoldingCards(portfolio) {
+    const wrap = document.getElementById('holdingCards');
+    if (!wrap) return;
+
+    if (portfolio.length === 0) {
+        wrap.innerHTML = `<p style="color: var(--text-sub); font-size: 14px; text-align: center; padding: 24px 8px; line-height: 1.7;">
+            まだ銘柄が登録されていません。<br>「スクショで追加」から始められます。
+        </p>`;
+        return;
+    }
+
+    const total = portfolio.reduce((s, v) => s + v.currentPrice * v.shares, 0);
+
+    wrap.innerHTML = portfolio.map(stock => {
+        const value = stock.currentPrice * stock.shares;
+        const cost = stock.acquisitionPrice * stock.shares;
+        const gain = value - cost;
+        const gainPct = cost > 0 ? (gain / cost) * 100 : 0;
+        const up = gain >= 0;
+        const color = up ? 'var(--gain)' : 'var(--loss)';
+        const ratio = total > 0 ? (value / total) * 100 : 0;
+        const benefit = getBenefitInfo(stock.code)
+            ? '<span class="benefit-tag" style="margin-left: 6px;">優待</span>' : '';
+
+        return `
+        <div class="holding-card" onclick="openStockDetail('${escapeHtml(stock.code)}')">
+            <div class="holding-card-top">
+                <div class="holding-card-name">
+                    ${escapeHtml(stock.name)}${benefit}
+                    <span class="holding-card-code">${escapeHtml(stock.code)} ・ 全体の${ratio.toFixed(1)}%</span>
+                </div>
+                <div class="holding-card-gain" style="color: ${color};">
+                    <strong>${up ? '+' : '-'}${formatYen(Math.abs(gain))}</strong>
+                    <small>${up ? '+' : ''}${gainPct.toFixed(1)}%</small>
+                </div>
+            </div>
+            <div class="holding-card-grid">
+                <div><dt>株数</dt><dd>${stock.shares.toLocaleString()}株</dd></div>
+                <div><dt>取得単価</dt><dd>${formatYen(stock.acquisitionPrice)}</dd></div>
+                <div><dt>現在値</dt><dd>${formatYen(stock.currentPrice)}</dd></div>
+            </div>
+            <div class="holding-card-actions">
+                <button onclick="event.stopPropagation(); removeStockFromPortfolio('${escapeHtml(stock.code)}')">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    削除
+                </button>
+            </div>
+        </div>`;
     }).join('');
 }
 
@@ -1060,6 +1154,114 @@ function updateAIAnalysis() {
         findings.push({ tone: 'info', title: `無配の銘柄が${noDivCount}件`, text: '配当が確認できない銘柄があります。成長期待で保有する分には問題ありませんが、配当目的なら見直しの余地があります。' });
     }
 
+    // 7. 含み損の状況
+    const losers = portfolio.filter(s => s.currentPrice < s.acquisitionPrice);
+    const worst = [...portfolio].map(s => ({
+        s, pct: s.acquisitionPrice > 0 ? (s.currentPrice - s.acquisitionPrice) / s.acquisitionPrice * 100 : 0
+    })).sort((a, b) => a.pct - b.pct)[0];
+    if (worst && worst.pct <= -20) {
+        findings.push({
+            tone: 'warn', title: `${worst.s.name}が${Math.abs(worst.pct).toFixed(1)}%の含み損`,
+            text: `保有${portfolio.length}銘柄のうち${losers.length}銘柄が取得価格を下回っています。下落理由が業績悪化なのか市場全体の動きなのかを確認し、値下がりした銘柄を買い増して平均取得単価を下げるかどうかは慎重に判断してください。`
+        });
+    } else if (losers.length > 0) {
+        findings.push({
+            tone: 'info', title: `含み損の銘柄が${losers.length}件`,
+            text: `${portfolio.length}銘柄中${losers.length}銘柄が取得価格を下回っています。短期の値動きで慌てて売る必要はありませんが、保有理由が変わっていないかは定期的に確認しましょう。`
+        });
+    }
+
+    // 8. 株主優待の活用状況（あと何株で優待がもらえるかまで示す）
+    const benefitHeld = [];
+    const benefitShort = [];
+    portfolio.forEach(s => {
+        const b = getBenefitInfo(s.code);
+        if (!b) return;
+        const need = b.minShares || 100;
+        if (s.shares >= need) benefitHeld.push({ s, b, need });
+        else benefitShort.push({ s, b, need, gap: need - s.shares });
+    });
+    if (benefitHeld.length > 0) {
+        findings.push({
+            tone: 'ok', title: `株主優待が受けられる銘柄が${benefitHeld.length}件`,
+            text: benefitHeld.slice(0, 3).map(x => `${x.s.name}（${x.b.content || '優待あり'}）`).join('、') + '。権利確定月の前営業日までに保有しておく必要があります。'
+        });
+    }
+    if (benefitShort.length > 0) {
+        const x = benefitShort.sort((a, b) => a.gap - b.gap)[0];
+        findings.push({
+            tone: 'info', title: `あと${x.gap}株で${x.s.name}の優待対象`,
+            text: `${x.s.name}は${x.need}株から優待（${x.b.content || '内容は企業ページを確認'}）が受けられます。現在${x.s.shares}株なので、あと${x.gap}株で対象になります。追加費用は約${formatYen(x.gap * x.s.currentPrice)}です。`
+        });
+    }
+
+    // 9. 単元未満株（100株未満）の指摘
+    const oddLots = portfolio.filter(s => s.shares > 0 && s.shares < 100 && normalizeSector(s.sector) !== 'ETF');
+    if (oddLots.length > 0) {
+        findings.push({
+            tone: 'info', title: `単元未満株が${oddLots.length}件`,
+            text: `${oddLots.slice(0, 3).map(s => `${s.name}（${s.shares}株）`).join('、')}は100株未満です。配当は株数に応じて受け取れますが、株主優待や議決権は原則100株からです。`
+        });
+    }
+
+    // 項目別スコア（何が足りないのかを分けて見せる）
+    const clamp = v => Math.max(0, Math.min(100, Math.round(v)));
+    const axes = [
+        {
+            label: '銘柄の分散', value: clamp(100 - Math.max(0, topConcentration - 20) * 2),
+            note: `最大銘柄${topConcentration.toFixed(1)}% ・ ${portfolio.length}銘柄`
+        },
+        {
+            label: 'セクターの分散', value: clamp(100 - Math.max(0, topSectorPercent - 30) * 1.6),
+            note: `${sectorEntries[0][0]}が${topSectorPercent.toFixed(1)}% ・ ${sectorEntries.length}業種`
+        },
+        {
+            label: '配当の充実度', value: clamp(portfolioYield / 3.5 * 100),
+            note: div.annual > 0 ? `利回り${portfolioYield.toFixed(2)}% ・ 年間${formatYen(div.annual)}` : '配当のある銘柄がありません'
+        },
+        {
+            label: '守りの強さ', value: clamp((hasDefensive || hasETF ? 70 : 30) + (sectorEntries.length >= 4 ? 30 : sectorEntries.length * 7)),
+            note: hasDefensive || hasETF ? 'ディフェンシブ銘柄あり' : '食品・医薬・通信・インフラが未保有'
+        }
+    ];
+
+    // 次にやること（効果の大きい順に最大3つ）
+    const actions = [];
+    if (topConcentration > 30) {
+        actions.push(`<strong>${escapeHtml(topStock.name)}の比率を下げる</strong>：全体の${topConcentration.toFixed(1)}%を占めています。他の銘柄を買い増すか、一部を利益確定して比率を30%以下に近づけると1銘柄の急落に強くなります。`);
+    }
+    if (topSectorPercent > 50 && sectorEntries[0][0] !== 'ETF') {
+        actions.push(`<strong>${escapeHtml(sectorEntries[0][0])}以外の業種を足す</strong>：この業種で${topSectorPercent.toFixed(1)}%です。「推奨銘柄」ページに未保有セクターの候補が出ています。`);
+    }
+    if (!hasDefensive && !hasETF) {
+        actions.push('<strong>景気に左右されにくい銘柄を1つ加える</strong>：食品・医薬・通信・インフラは値動きが穏やかで、下落局面の下支えになります。');
+    }
+    if (worst && worst.pct <= -20) {
+        actions.push(`<strong>${escapeHtml(worst.s.name)}の下落理由を確認する</strong>：${Math.abs(worst.pct).toFixed(1)}%の含み損です。業績の悪化か一時的な地合いかで対応が変わります。保有理由が崩れていないかを見直しましょう。`);
+    }
+    // 優待の買い増しは追加費用が現実的な範囲のときだけ勧める
+    const affordable = benefitShort
+        .filter(x => x.gap * x.s.currentPrice <= 150000)
+        .sort((a, b) => (a.gap * a.s.currentPrice) - (b.gap * b.s.currentPrice))[0];
+    if (affordable) {
+        actions.push(`<strong>${escapeHtml(affordable.s.name)}をあと${affordable.gap}株買うと優待対象</strong>：追加費用は約${formatYen(affordable.gap * affordable.s.currentPrice)}です。`);
+    }
+    if (oddLots.length >= 3) {
+        actions.push(`<strong>単元未満株の扱いを決める</strong>：100株未満が${oddLots.length}件あります。優待や議決権は原則100株からなので、買い増して100株に揃えるか、配当目的として割り切るかを決めておくと管理が楽になります。`);
+    }
+    if (portfolio.length < 5) {
+        actions.push(`<strong>銘柄数を5つ以上にする</strong>：現在${portfolio.length}銘柄です。1社の不調が全体に響きにくくなります。`);
+    }
+    if (portfolioYield > 0 && portfolioYield < 1.5) {
+        actions.push(`<strong>配当のある銘柄の比率を上げる</strong>：現在の利回りは約${portfolioYield.toFixed(2)}%で市場平均（約2%）を下回ります。`);
+    }
+    if (actions.length === 0) {
+        actions.push('<strong>今の構成を維持して積み立てを続ける</strong>：大きな偏りは見つかりませんでした。定期的に比率を確認し、増えすぎた銘柄を調整していきましょう。');
+    }
+
+    renderScoreAxes(axes);
+    renderNextActions(actions.slice(0, 3));
+
     let grade, title;
     if (score >= 90) { grade = 'A'; title = '素晴らしいバランスのポートフォリオです'; }
     else if (score >= 75) { grade = 'B+'; title = 'バランスは良好ですが、さらに伸ばせる余地があります'; }
@@ -1077,6 +1279,34 @@ function updateAIAnalysis() {
             <p style="color: var(--text-sub); font-size: 14px;">${escapeHtml(f.text)}</p>
         </div>
     `).join('');
+}
+
+// 項目別スコアをバーで表示（どこが弱いのかが一目で分かるようにする）
+function renderScoreAxes(axes) {
+    const card = document.getElementById('scoreAxesCard');
+    const wrap = document.getElementById('scoreAxes');
+    if (!wrap || !card) return;
+    card.style.display = 'block';
+    wrap.innerHTML = axes.map(a => {
+        const color = a.value >= 70 ? 'var(--gain)' : a.value >= 45 ? 'var(--warn)' : 'var(--loss)';
+        return `
+        <div class="axis-row">
+            <div class="axis-head">
+                <span class="axis-label">${escapeHtml(a.label)}</span>
+                <span class="axis-value" style="color: ${color};">${a.value}</span>
+            </div>
+            <div class="axis-bar"><span style="width: ${a.value}%; background-color: ${color};"></span></div>
+            <p class="axis-note">${escapeHtml(a.note)}</p>
+        </div>`;
+    }).join('');
+}
+
+function renderNextActions(actions) {
+    const card = document.getElementById('nextActionsCard');
+    const list = document.getElementById('nextActions');
+    if (!list || !card) return;
+    card.style.display = 'block';
+    list.innerHTML = actions.map(a => `<li>${a}</li>`).join('');
 }
 
 // ===== 推奨銘柄 =====
@@ -2441,7 +2671,7 @@ function displayOCRResults(stocks, meta = {}) {
     const needInput = stocks.filter(s => !s.shares || !s.price).length;
     let html = `<div class="ocr-summary">
         <strong>${stocks.length}銘柄</strong>を認識しました${shotCount > 1 ? `（${shotCount}枚のスクショから）` : ''}${meta.failures ? `<br><span style="color: var(--loss);">${meta.failures}枚は読み取りに失敗しました</span>` : ''}
-        ${needInput ? `<br><span style="color: #E09112;">うち${needInput}銘柄は株数または取得単価が画面に写っていないため入力が必要です</span>` : '<br><span style="color: var(--profit);">株数・取得単価もすべて読み取れました。そのまま追加できます</span>'}
+        ${needInput ? `<br><span style="color: #E09112;">うち${needInput}銘柄は株数または取得単価が画面に写っていないため入力が必要です</span>` : '<br><span style="color: var(--gain);">株数・取得単価もすべて読み取れました。そのまま追加できます</span>'}
         ${noteHtml}
     </div>
     <div class="ocr-bulk-bar">

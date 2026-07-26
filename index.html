@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=9">
+    <link rel="stylesheet" href="style.css?v=11">
     <script async src="https://cdn.jsdelivr.net/npm/tesseract.js@v5.0.4/dist/tesseract.min.js"></script>
 </head>
 <body>
@@ -39,9 +39,10 @@
                 <p class="page-desc">保有銘柄の集中度・業種の分散診断と、株主優待の管理はこちらから行えます。</p>
             </div>
             <div class="stats-grid">
-                <div class="stat-card"><div><p class="stat-label">保有銘柄数</p><p class="stat-value">0 銘柄</p></div><div class="stat-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.29 7 12 12 20.71 7"/><line x1="12" y1="22" x2="12" y2="12"/></svg></div></div>
-                <div class="stat-card"><div><p class="stat-label">概算取得総額</p><p class="stat-value">¥0</p></div><div class="stat-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg></div></div>
-                <div class="stat-card"><div><p class="stat-label">上位1銘柄集中度</p><p class="stat-value">- %</p></div><div class="stat-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/></svg></div></div>
+                <div class="stat-card"><div><p class="stat-label">評価額（現在値ベース）</p><p class="stat-value" id="kpiValue">¥0</p></div><div class="stat-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg></div></div>
+                <div class="stat-card"><div><p class="stat-label">評価損益</p><p class="stat-value" id="kpiGain">¥0</p><p class="stat-sub" id="kpiGainSub"></p></div><div class="stat-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></div></div>
+                <div class="stat-card"><div><p class="stat-label">年間配当見込み</p><p class="stat-value" id="kpiDividend">¥0</p><p class="stat-sub" id="kpiDividendSub"></p></div><div class="stat-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/></svg></div></div>
+                <div class="stat-card"><div><p class="stat-label">最大銘柄の比率</p><p class="stat-value" id="kpiConcentration">- %</p><p class="stat-sub" id="kpiConcentrationSub"></p></div><div class="stat-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/></svg></div></div>
             </div>
             <div class="btn-group">
                 <button class="btn btn-primary" onclick="openScreenshotUpload()"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>スクショで追加</button>
@@ -55,12 +56,14 @@
             </div>
             <div class="card-container">
                 <h3 class="card-title">保有銘柄一覧</h3>
-                <div style="overflow-x: auto;">
+                <div class="stock-table-wrap table-scroll">
                     <table class="stock-table">
                         <thead><tr><th>銘柄名</th><th>株数</th><th>取得単価</th><th>現在値</th><th>評価損益</th><th></th></tr></thead>
                         <tbody></tbody>
                     </table>
                 </div>
+                <!-- スマホではこちらのカード表示を使う（表は横に潰れて読めないため） -->
+                <div class="holding-cards" id="holdingCards"></div>
             </div>
         </section>
         <!-- Portfolio -->
@@ -142,12 +145,23 @@
                     <p id="scoreDate" style="color: var(--text-sub); font-size: 14px; margin-top: 4px;"></p>
                 </div>
             </div>
+            <div class="card-container" id="scoreAxesCard" style="display: none;">
+                <h3 class="card-title">項目別の評価</h3>
+                <div id="scoreAxes"></div>
+            </div>
+            <div class="card-container" id="nextActionsCard" style="display: none; border-left: 4px solid var(--primary-color);">
+                <h3 class="card-title">次にやること</h3>
+                <ol class="next-actions" id="nextActions"></ol>
+            </div>
             <div class="card-container">
-                <h3 class="card-title">AIからの重要ポイント</h3>
+                <h3 class="card-title">診断の内訳</h3>
                 <div class="diagnostic-list" id="diagnosticList">
                     <!-- 診断結果が動的に挿入される -->
                 </div>
             </div>
+            <p style="color: var(--text-sub); font-size: 11.5px; line-height: 1.7; margin-top: 4px;">
+                この診断は保有内容から機械的に計算した参考情報です。投資判断はご自身の責任で行ってください。株価・配当データは提供元の値をそのまま使用しており、正確性を保証するものではありません。
+            </p>
         </section>
         <!-- Recommended Stocks -->
         <section id="recommend" class="page-section">
@@ -291,7 +305,34 @@
         <div class="bottom-nav-item active" onclick="switchPage('dashboard')"><span class="bottom-nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg></span><span>ダッシュ</span></div>
         <div class="bottom-nav-item" onclick="switchPage('ai-analysis')"><span class="bottom-nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span><span>AI診断</span></div>
         <div class="bottom-nav-item" onclick="switchPage('ai-chat')"><span class="bottom-nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 21 1.9-5.7a8.5 8.5 0 1 1 3.8 3.8z"/></svg></span><span>相談</span></div>
-        <div class="bottom-nav-item" onclick="switchPage('guide')"><span class="bottom-nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg></span><span>ガイド</span></div>
+        <div class="bottom-nav-item" onclick="switchPage('dividend')"><span class="bottom-nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/></svg></span><span>配当</span></div>
+        <div class="bottom-nav-item" onclick="openMobileMenu()"><span class="bottom-nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></span><span>メニュー</span></div>
+    </div>
+    <!-- スマホ用メニュー（下部ナビに入りきらないページへの導線） -->
+    <div class="mobile-menu-backdrop" id="mobileMenuBackdrop" onclick="closeMobileMenu()"></div>
+    <div class="mobile-menu-sheet" id="mobileMenuSheet" role="dialog" aria-label="メニュー">
+        <div class="mobile-menu-handle"></div>
+        <h3>メニュー</h3>
+        <button class="mobile-menu-link" onclick="goToPage('portfolio')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+            <span><strong>ポートフォリオ</strong><small>損益とセクター構成の内訳</small></span>
+        </button>
+        <button class="mobile-menu-link" onclick="goToPage('history')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+            <span><strong>資産推移</strong><small>評価額の日ごとの変化</small></span>
+        </button>
+        <button class="mobile-menu-link" onclick="goToPage('recommend')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+            <span><strong>推奨銘柄</strong><small>保有内容から見た候補</small></span>
+        </button>
+        <button class="mobile-menu-link" onclick="goToPage('ai-chat')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 21 1.9-5.7a8.5 8.5 0 1 1 3.8 3.8z"/></svg>
+            <span><strong>相談</strong><small>投資の疑問に答えます</small></span>
+        </button>
+        <button class="mobile-menu-link" onclick="goToPage('guide')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+            <span><strong>買い方ガイド</strong><small>証券口座の開設から購入まで</small></span>
+        </button>
     </div>
     <div id="modalOverlay" class="modal-overlay" onclick="closeModal(); closeScreenshotModal(); closeManualAddModal();"></div>
     <!-- 銘柄詳細モーダル -->
@@ -413,6 +454,6 @@
             <button class="btn btn-primary" onclick="submitManualAdd()"><span id="manualSubmitLabel">追加する</span></button>
         </div>
     </div>
-    <script src="main.js?v=9"></script>
+    <script src="main.js?v=11"></script>
 </body>
 </html>
