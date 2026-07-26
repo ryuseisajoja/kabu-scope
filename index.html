@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=12">
+    <link rel="stylesheet" href="style.css?v=13">
     <script async src="https://cdn.jsdelivr.net/npm/tesseract.js@v5.0.4/dist/tesseract.min.js"></script>
 </head>
 <body>
@@ -112,10 +112,8 @@
                     </div>
                 </div>
                 <div class="card-container">
-                    <h3 class="card-title">上位構成比率</h3>
-                    <table class="stock-table">
-                        <tbody></tbody>
-                    </table>
+                    <h3 class="card-title">構成比率の大きい銘柄</h3>
+                    <div id="topComposition"></div>
                 </div>
             </div>
         </section>
@@ -131,12 +129,14 @@
             </div>
             <div class="card-container">
                 <h3 class="card-title">日次履歴</h3>
-                <div style="overflow-x: auto;">
+                <div class="stock-table-wrap table-scroll">
                     <table class="stock-table">
                         <thead><tr><th>日付</th><th>評価額</th><th>評価損益</th><th>保有数</th></tr></thead>
                         <tbody id="historyTableBody"></tbody>
                     </table>
                 </div>
+                <!-- スマホではカード表示に切り替える -->
+                <div class="holding-cards" id="historyCards"></div>
             </div>
         </section>
         <!-- Dividend Simulator -->
@@ -483,6 +483,6 @@
             <button class="btn btn-primary" onclick="submitManualAdd()"><span id="manualSubmitLabel">追加する</span></button>
         </div>
     </div>
-    <script src="main.js?v=12"></script>
+    <script src="main.js?v=13"></script>
 </body>
 </html>

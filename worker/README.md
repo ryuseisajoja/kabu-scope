@@ -28,11 +28,21 @@ npm install -g wrangler && wrangler login && wrangler deploy worker/price-proxy.
 
 中継サーバーを設定すると、リポジトリから以下のファイルを削除してもアプリが動きます（＝データの再配布を止められます）。
 
-- `prices.json` … 人気銘柄の株価スナップショット
-- `prices_all.json` … 全上場銘柄の株価スナップショット
-- `dividends.json` … 全上場銘柄の配当データ
+| ファイル | 内容 | 設定後の代替 |
+| --- | --- | --- |
+| `prices.json` | 人気銘柄の株価スナップショット | 保有銘柄の株価を都度取得 |
+| `prices_all.json` | 全上場銘柄の株価スナップショット | 同上 |
+| `dividends.json` | 全上場銘柄の配当データ | 保有銘柄の配当を都度取得し、この端末に1週間キャッシュ |
 
-削除する場合は `.github/workflows/update-prices.yml` のコミット対象からも外してください。`master.json`（銘柄コードと名称の一覧）は銘柄検索に必要なので、[JPXが公表している上場銘柄一覧](https://www.jpx.co.jp/markets/statistics-equities/misc/01.html) をもとに作り直すのが安全です。
+配当は直近2年の支払い実績から年間配当を推定します（特別配当や株式分割の未調整値で利回りが膨らまないよう、中央値ベースの推定と比較して補正）。サーバー側スクリプトと同じ計算式なので、表示される利回りは変わりません。
+
+削除する手順:
+
+1. 上の手順で中継サーバーを設定し、株価が表示されることを確認する
+2. `.github/workflows/update-prices.yml` のコミット対象から該当ファイルを外す
+3. `git rm prices.json prices_all.json dividends.json` して push
+
+`master.json`（銘柄コードと名称の一覧）は銘柄検索に必要なので残しますが、[JPXが公表している上場銘柄一覧](https://www.jpx.co.jp/markets/statistics-equities/misc/01.html) をもとに作り直すのが安全です。
 
 ## 注意
 

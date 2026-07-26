@@ -204,6 +204,16 @@ body { background-color: var(--bg-color); color: var(--text-main); display: flex
 .detail-item p { font-size: 16px; font-weight: 700; margin: 0; font-variant-numeric: tabular-nums; }
 .advice-box { background-color: var(--accent-blue-light); padding: 15px; border-radius: 8px; border-left: 3px solid var(--accent-blue); font-size: 14px; }
 .benefit-tag { display: inline-block; background-color: var(--primary-light); color: var(--primary-color); padding: 2px 9px; border-radius: 20px; font-size: 11px; font-weight: 700; }
+/* ===== 構成比率（棒付き一覧） ===== */
+.compo-row { padding: 11px 0; border-bottom: 1px solid var(--border-color); cursor: pointer; }
+.compo-row:last-child { border-bottom: none; }
+.compo-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.compo-name { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compo-pct { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.compo-bar { height: 6px; border-radius: 3px; background-color: #EDF0EE; overflow: hidden; }
+.compo-bar span { display: block; height: 100%; border-radius: 3px; }
+.compo-note { color: var(--text-sub); font-size: 12px; margin: 6px 0 0 0; font-variant-numeric: tabular-nums; }
+
 /* ===== AI診断：項目別スコアと次のアクション ===== */
 .axis-row { margin-bottom: 14px; }
 .axis-row:last-child { margin-bottom: 0; }

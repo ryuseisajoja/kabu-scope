@@ -577,6 +577,88 @@ function getBenefitInfo(code) {
     return null;
 }
 
+// ===== 配当データのオンデマンド取得 =====
+// 中継サーバーを設定している場合は、全銘柄の配当データ(dividends.json)を配信せず、
+// 保有銘柄の分だけその都度取得してこの端末にキャッシュする
+const DIVIDEND_CACHE_KEY = 'dividendCache';
+const DIVIDEND_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 配当は頻繁に変わらないため1週間
+
+function getDividendCache() {
+    try {
+        return JSON.parse(localStorage.getItem(DIVIDEND_CACHE_KEY) || '{}');
+    } catch (e) {
+        return {};
+    }
+}
+
+// 直近の配当支払いから年間の1株配当を推定する（scripts/fetch_dividends.mjs と同じ考え方）。
+// 特別配当や株式分割の未調整値で利回りが膨らむのを防ぐため、中央値ベースの推定と比較する
+function annualizeDividends(payments, price) {
+    if (!payments || payments.length === 0) return null;
+    const cutoff = Date.now() - 365 * 24 * 60 * 60 * 1000;
+    const trailing = payments.filter(p => p.date * 1000 >= cutoff).map(p => p.amount);
+    const trailingSum = trailing.reduce((s, v) => s + v, 0);
+
+    const freq = trailing.length || 2;
+    const sample = payments.slice(-Math.max(4, freq * 2)).map(p => p.amount).sort((a, b) => a - b);
+    const mid = Math.floor(sample.length / 2);
+    const median = sample.length % 2 ? sample[mid] : (sample[mid - 1] + sample[mid]) / 2;
+    const medianBased = median * freq;
+
+    let annual = trailingSum;
+    if (medianBased > 0 && trailingSum > medianBased * 1.6) annual = medianBased;
+    if (annual <= 0) annual = medianBased;
+    if (annual <= 0) return null;
+
+    const perShare = +annual.toFixed(2);
+    const y = price > 0 ? +((perShare / price) * 100).toFixed(2) : 0;
+    if (y > MAX_PLAUSIBLE_YIELD) return null;
+    return { d: perShare, y };
+}
+
+async function fetchDividendFromApi(code) {
+    const url = `${priceApiBase()}/v8/finance/chart/${code}.T?range=2y&interval=1mo&events=div`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    const result = json && json.chart && json.chart.result && json.chart.result[0];
+    const price = result && result.meta && result.meta.regularMarketPrice;
+    if (typeof price !== 'number') throw new Error('no price data');
+    const events = (result.events && result.events.dividends) || {};
+    const payments = Object.values(events)
+        .filter(ev => ev && typeof ev.amount === 'number' && ev.amount > 0)
+        .sort((a, b) => a.date - b.date);
+    return annualizeDividends(payments, price); // 無配なら null
+}
+
+async function ensureDividendData(codes) {
+    if (!getPriceProxyBase()) return; // 未設定なら配信中の dividends.json を使う
+    const cache = getDividendCache();
+    const now = Date.now();
+    const targets = [...new Set(codes)].filter(c => !cache[c] || now - (cache[c].t || 0) > DIVIDEND_TTL_MS);
+
+    for (const code of targets) {
+        try {
+            const info = await fetchDividendFromApi(code);
+            cache[code] = info ? { d: info.d, y: info.y, t: now } : { d: 0, y: 0, t: now };
+        } catch (e) {
+            // 取得できなかった銘柄は次回に再挑戦する（キャッシュに入れない）
+        }
+    }
+    try {
+        localStorage.setItem(DIVIDEND_CACHE_KEY, JSON.stringify(cache));
+    } catch (e) {
+        // 保存領域が満杯でも表示は続ける
+    }
+
+    // getDividendInfo が参照する配当データへ反映する
+    if (!FULL_DIVIDENDS) FULL_DIVIDENDS = {};
+    for (const code of new Set(codes)) {
+        const c = cache[code];
+        if (c && c.d > 0) FULL_DIVIDENDS[code] = { d: c.d, y: c.y };
+    }
+}
+
 // 日本株の配当利回りは実質的にこの水準を超えないため、超える値はデータ不整合とみなす
 // （株式分割前の1株配当が残っていると利回りが数倍に膨らむ）
 const MAX_PLAUSIBLE_YIELD = 15;
@@ -687,6 +769,8 @@ async function refreshPrices(force = false) {
 
     try {
         const prices = await fetchRealTimePrices(portfolio.map(s => s.code), force);
+        // 中継サーバー設定時は、配当も保有銘柄の分だけその都度取得する
+        await ensureDividendData(portfolio.map(s => s.code));
         let updated = 0;
         let snapshotTime = null;
 
@@ -986,13 +1070,30 @@ function updatePortfolioPage(portfolio) {
             </div>`;
     }
 
-    if (portfolioTbody) {
-        const topStocks = [...portfolio]
+    // 構成比率は数字だけだと大小が掴みにくいので棒で示す
+    const composition = document.getElementById('topComposition');
+    if (composition) {
+        const ranked = [...portfolio]
             .sort((a, b) => (b.currentPrice * b.shares) - (a.currentPrice * a.shares))
-            .slice(0, 5);
-        portfolioTbody.innerHTML = topStocks.map(stock => {
-            const percentage = ((stock.currentPrice * stock.shares) / totalCurrent * 100).toFixed(1);
-            return `<tr><td>${escapeHtml(stock.name)}</td><td><strong>${percentage}%</strong></td></tr>`;
+            .slice(0, 8);
+        const maxPct = ranked.length ? (ranked[0].currentPrice * ranked[0].shares) / totalCurrent * 100 : 0;
+        composition.innerHTML = ranked.map((stock, i) => {
+            const value = stock.currentPrice * stock.shares;
+            const pct = totalCurrent > 0 ? value / totalCurrent * 100 : 0;
+            const gain = value - stock.acquisitionPrice * stock.shares;
+            const color = pct >= 30 ? 'var(--warn)' : 'var(--primary-color)';
+            return `
+            <div class="compo-row" onclick="openStockDetail('${escapeHtml(stock.code)}')">
+                <div class="compo-head">
+                    <span class="compo-name">${i + 1}. ${escapeHtml(stock.name)}</span>
+                    <span class="compo-pct">${pct.toFixed(1)}%</span>
+                </div>
+                <div class="compo-bar"><span style="width: ${maxPct > 0 ? (pct / maxPct * 100).toFixed(1) : 0}%; background-color: ${color};"></span></div>
+                <p class="compo-note">${formatYen(value)}
+                    <span style="color: ${gain >= 0 ? 'var(--gain)' : 'var(--loss)'};">（${gain >= 0 ? '+' : '-'}${formatYen(Math.abs(gain))}）</span>
+                    ${pct >= 30 ? '<span style="color: var(--warn);">・比率が高め</span>' : ''}
+                </p>
+            </div>`;
         }).join('');
     }
 }
@@ -1074,6 +1175,42 @@ function renderHistoryPage() {
             </tr>`;
         }).join('');
     }
+
+    renderHistoryCards(history);
+}
+
+// スマホ用の日次履歴カード（前日との差も出して変化が分かるようにする）
+function renderHistoryCards(history) {
+    const wrap = document.getElementById('historyCards');
+    if (!wrap) return;
+    if (!history || history.length === 0) { wrap.innerHTML = ''; return; }
+
+    const desc = [...history].reverse();
+    wrap.innerHTML = desc.map((h, i) => {
+        const gain = h.gainLoss;
+        const up = gain >= 0;
+        const prev = desc[i + 1];
+        const dayDiff = prev ? h.currentValue - prev.currentValue : null;
+        const dayHtml = dayDiff === null ? ''
+            : `<div><dt>前日比</dt><dd style="color: ${dayDiff >= 0 ? 'var(--gain)' : 'var(--loss)'};">${dayDiff >= 0 ? '+' : '-'}${formatYen(Math.abs(dayDiff))}</dd></div>`;
+        return `
+        <div class="holding-card">
+            <div class="holding-card-top">
+                <div class="holding-card-name">${escapeHtml(h.date)}
+                    <span class="holding-card-code">${h.holdings}銘柄を保有</span>
+                </div>
+                <div class="holding-card-gain" style="color: ${up ? 'var(--gain)' : 'var(--loss)'};">
+                    <strong>${up ? '+' : '-'}${formatYen(Math.abs(gain))}</strong>
+                    <small>${up ? '+' : '-'}${Math.abs(parseFloat(h.gainLossPercent)).toFixed(2)}%</small>
+                </div>
+            </div>
+            <div class="holding-card-grid">
+                <div><dt>評価額</dt><dd>${formatYen(h.currentValue)}</dd></div>
+                <div><dt>取得総額</dt><dd>${formatYen(h.totalValue)}</dd></div>
+                ${dayHtml}
+            </div>
+        </div>`;
+    }).join('');
 }
 
 // ===== AI診断 =====
