@@ -46,17 +46,36 @@ async function fetchDividend(code, attempt = 1) {
     const price = meta.regularMarketPrice;
     const events = result?.events?.dividends || {};
     const cutoff = Date.now() - YEAR_MS;
-    // 直近12ヶ月に支払われた1株配当の合計
-    let annualPerShare = 0;
-    for (const ev of Object.values(events)) {
-        if (ev && typeof ev.amount === 'number' && ev.date * 1000 >= cutoff) {
-            annualPerShare += ev.amount;
-        }
-    }
-    if (annualPerShare <= 0) return null; // 無配 or データなし
+
+    const payments = Object.values(events)
+        .filter(ev => ev && typeof ev.amount === 'number' && ev.amount > 0)
+        .sort((a, b) => a.date - b.date);
+    if (payments.length === 0) return null; // 無配 or データなし
+
+    const trailing = payments.filter(ev => ev.date * 1000 >= cutoff).map(ev => ev.amount);
+    const trailingSum = trailing.reduce((s, v) => s + v, 0);
+
+    // 年間の支払回数（日本株は年2回が多い）
+    const freq = trailing.length || 2;
+    // 直近の支払額の中央値。特別配当や分割未調整の異常値に影響されにくい
+    const sample = payments.slice(-Math.max(4, freq * 2)).map(ev => ev.amount).sort((a, b) => a - b);
+    const mid = Math.floor(sample.length / 2);
+    const median = sample.length % 2 ? sample[mid] : (sample[mid - 1] + sample[mid]) / 2;
+    const medianBased = median * freq;
+
+    // 直近12ヶ月の合計を基本にするが、中央値ベースの推定を大きく超える場合は
+    // 特別配当や株式分割の未調整値が混ざっているため中央値ベースを採用する
+    // （例: 日本製鉄は 16/16/60/12 と記録され、単純合計だと利回りが2倍以上に膨らむ）
+    let annualPerShare = trailingSum;
+    if (medianBased > 0 && trailingSum > medianBased * 1.6) annualPerShare = medianBased;
+    // 支払データが欠けている場合も中央値ベースで補う
+    if (annualPerShare <= 0) annualPerShare = medianBased;
+    if (annualPerShare <= 0) return null;
 
     const perShare = +annualPerShare.toFixed(2);
     const yieldPct = price > 0 ? +((perShare / price) * 100).toFixed(2) : 0;
+    // 日本株で15%超はデータ不整合とみなして採用しない
+    if (yieldPct > 15) return null;
     return { d: perShare, y: yieldPct };
 }
 

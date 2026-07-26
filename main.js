@@ -565,20 +565,32 @@ function getBenefitInfo(code) {
     return null;
 }
 
-// コードから配当情報を取得（厳選データ優先 → 全銘柄配当データ）
-// 戻り値: { perShare: 1株配当(円), yield: 利回り(%), source: 'curated'|'auto'|'none' }
+// 日本株の配当利回りは実質的にこの水準を超えないため、超える値はデータ不整合とみなす
+// （株式分割前の1株配当が残っていると利回りが数倍に膨らむ）
+const MAX_PLAUSIBLE_YIELD = 15;
+
+// コードから配当情報を取得（週次更新の全銘柄データ優先 → 手入力の厳選データ）
+// 手入力側は株式分割に追随できず古い1株配当が残るため、自動更新データを優先する
+// 戻り値: { perShare: 1株配当(円), yield: 利回り(%), source: 'auto'|'curated'|'none' }
 function getDividendInfo(code, currentPrice) {
+    const calcYield = (perShare, storedYield) => {
+        const y = currentPrice > 0 ? (perShare / currentPrice * 100) : (storedYield || 0);
+        return y > MAX_PLAUSIBLE_YIELD ? 0 : y;
+    };
+
+    const auto = FULL_DIVIDENDS && FULL_DIVIDENDS[code];
+    if (auto) {
+        const y = calcYield(auto.d, auto.y);
+        if (y > 0) return { perShare: auto.d, yield: y, source: 'auto' };
+    }
     const curated = STOCK_MASTER_DATA[code];
     if (curated && curated.dividend !== undefined) {
-        const perShare = curated.dividend;
-        const y = currentPrice > 0 ? (perShare / currentPrice * 100) : (curated.dividend_yield || 0);
-        return { perShare, yield: y, source: 'curated' };
+        const y = calcYield(curated.dividend, curated.dividend_yield);
+        // 分割前の配当額が残っていると利回りが実態から乖離するので、その場合は無配扱いにせず0を返す
+        if (y > 0) return { perShare: curated.dividend, yield: y, source: 'curated' };
+        return { perShare: 0, yield: 0, source: 'none' };
     }
-    if (FULL_DIVIDENDS && FULL_DIVIDENDS[code]) {
-        const d = FULL_DIVIDENDS[code];
-        const y = currentPrice > 0 ? (d.d / currentPrice * 100) : d.y;
-        return { perShare: d.d, yield: y, source: 'auto' };
-    }
+    if (auto) return { perShare: auto.d, yield: 0, source: 'auto' };
     return { perShare: 0, yield: 0, source: 'none' };
 }
 
