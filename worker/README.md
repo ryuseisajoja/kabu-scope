@@ -9,7 +9,7 @@
 ## 手順（10分ほど）
 
 1. Cloudflare のアカウントを作る（無料）: https://dash.cloudflare.com/sign-up
-2. ダッシュボードで **Workers & Pages → Create application → Create Worker** を選ぶ
+2. ダッシュボード左メニューの **Compute**（Build セクション。以前は「Workers & Pages」という独立項目だった）→ **Workers & Pages** → **Create application** → **Create Worker** を選ぶ
 3. 名前を決めて **Deploy**（この時点では雛形のコード）
 4. **Edit code** を開き、既存のコードを全部消して [`price-proxy.js`](./price-proxy.js) の中身を貼り付ける
 5. `ALLOWED_ORIGINS` を自分のサイトのURLに変更する（例: `https://ryuseisajoja.github.io`）
