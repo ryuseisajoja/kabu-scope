@@ -214,6 +214,34 @@ body { background-color: var(--bg-color); color: var(--text-main); display: flex
 .compo-bar span { display: block; height: 100%; border-radius: 3px; }
 .compo-note { color: var(--text-sub); font-size: 12px; margin: 6px 0 0 0; font-variant-numeric: tabular-nums; }
 
+/* ===== 単元達成プランナー ===== */
+.unit-row { padding: 14px 0; border-bottom: 1px solid var(--border-color); }
+.unit-row:last-child { border-bottom: none; }
+.unit-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+.unit-name { font-size: 14.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.unit-code { color: var(--text-sub); font-size: 12px; font-weight: 400; margin-left: 6px; }
+.unit-count { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.unit-count span { font-size: 11.5px; color: var(--text-sub); font-weight: 400; }
+.unit-bar { height: 7px; border-radius: 4px; background-color: #EDF0EE; overflow: hidden; }
+.unit-bar span { display: block; height: 100%; border-radius: 4px; transition: width 0.4s ease; }
+.unit-note { font-size: 13px; margin: 7px 0 0 0; }
+.unit-reward { font-size: 12px; color: var(--text-sub); margin: 4px 0 0 0; line-height: 1.6; }
+.unit-sim-btn {
+    margin-top: 9px; background: none; border: 1px solid var(--border-color); border-radius: 8px;
+    min-height: 36px; padding: 0 12px; font-family: inherit; font-size: 12.5px;
+    color: var(--primary-color); font-weight: 700; cursor: pointer;
+}
+.unit-sim-btn:hover { background-color: var(--primary-light); }
+
+/* ===== 買った場合のシミュレーション ===== */
+.sim-cost { font-size: 14px; margin: 0 0 14px 0; padding-bottom: 12px; border-bottom: 1px solid var(--border-color); }
+.sim-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid #F1F4F2; }
+.sim-label { font-size: 13px; color: var(--text-sub); min-width: 0; }
+.sim-values { display: flex; align-items: center; gap: 7px; flex-shrink: 0; font-variant-numeric: tabular-nums; font-size: 14px; }
+.sim-before { color: var(--text-sub); }
+.sim-values svg { color: var(--text-sub); flex-shrink: 0; }
+.sim-note { font-size: 12.5px; line-height: 1.8; color: var(--text-sub); margin: 14px 0 0 0; background-color: var(--primary-light); padding: 11px 13px; border-radius: 8px; }
+
 /* ===== AI診断：項目別スコアと次のアクション ===== */
 .axis-row { margin-bottom: 14px; }
 .axis-row:last-child { margin-bottom: 0; }

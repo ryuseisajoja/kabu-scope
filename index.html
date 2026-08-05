@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=16">
+    <link rel="stylesheet" href="style.css?v=17">
     <script async src="https://cdn.jsdelivr.net/npm/tesseract.js@v5.0.4/dist/tesseract.min.js"></script>
 </head>
 <body>
@@ -21,6 +21,7 @@
             <li class="nav-item" onclick="switchPage('portfolio')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>ポートフォリオ</li>
             <li class="nav-item" onclick="switchPage('history')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>資産推移</li>
             <li class="nav-item" onclick="switchPage('ai-analysis')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>AI診断</li>
+            <li class="nav-item" onclick="switchPage('unit-plan')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>単元プラン</li>
             <li class="nav-item" onclick="switchPage('recommend')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>推奨銘柄</li>
             <li class="nav-item" onclick="switchPage('dividend')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/></svg>配当予測</li>
             <li class="nav-item" onclick="switchPage('ai-chat')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 21 1.9-5.7a8.5 8.5 0 1 1 3.8 3.8z"/></svg>AI相談</li>
@@ -193,6 +194,36 @@
                 この診断は保有内容から機械的に計算した参考情報です。投資判断はご自身の責任で行ってください。株価・配当データは提供元の値をそのまま使用しており、正確性を保証するものではありません。
             </p>
         </section>
+        <!-- 単元達成プランナー -->
+        <section id="unit-plan" class="page-section">
+            <div class="page-header">
+                <h2 class="page-title">単元プラン</h2>
+                <p class="page-desc">100株（1単元）まであと何株か、達成すると何が得られるかを整理します。</p>
+            </div>
+            <div class="card-container" id="unitSummaryCard">
+                <div id="unitSummary"></div>
+            </div>
+            <div class="card-container" id="unitBudgetCard">
+                <h3 class="card-title">予算から選ぶ</h3>
+                <p style="font-size: 13px; color: var(--text-sub); line-height: 1.7; margin: 0 0 12px 0;">
+                    使える金額を入れると、その範囲で単元化できる組み合わせを提案します（必要金額が少ない順、株主優待がある銘柄を優先）。
+                </p>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <input type="number" id="unitBudget" min="0" step="1000" placeholder="例: 50000" inputmode="numeric"
+                           style="flex: 1; min-width: 0; padding: 11px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 16px;">
+                    <button class="btn btn-primary" style="flex-shrink: 0;" onclick="renderUnitPlan()">試算する</button>
+                </div>
+                <div id="unitBudgetResult" style="margin-top: 14px;"></div>
+            </div>
+            <div class="card-container">
+                <h3 class="card-title">銘柄ごとの達成状況</h3>
+                <div id="unitList"></div>
+            </div>
+            <p style="color: var(--text-sub); font-size: 11.5px; line-height: 1.7;">
+                必要金額は現在値をもとにした概算で、手数料は含みません。単元株数は東証の標準である100株として計算しています。
+                株主優待の必要株数・内容は変更されることがあるため、購入前に企業のIR情報をご確認ください。
+            </p>
+        </section>
         <!-- Recommended Stocks -->
         <section id="recommend" class="page-section">
             <div class="page-header">
@@ -351,6 +382,10 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
             <span><strong>資産推移</strong><small>評価額の日ごとの変化</small></span>
         </button>
+        <button class="mobile-menu-link" onclick="goToPage('unit-plan')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
+            <span><strong>単元プラン</strong><small>100株まであと何株・いくら</small></span>
+        </button>
         <button class="mobile-menu-link" onclick="goToPage('recommend')">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
             <span><strong>推奨銘柄</strong><small>保有内容から見た候補</small></span>
@@ -364,7 +399,7 @@
             <span><strong>買い方ガイド</strong><small>証券口座の開設から購入まで</small></span>
         </button>
     </div>
-    <div id="modalOverlay" class="modal-overlay" onclick="closeModal(); closeScreenshotModal(); closeManualAddModal(); closeEditHolding();"></div>
+    <div id="modalOverlay" class="modal-overlay" onclick="closeModal(); closeScreenshotModal(); closeManualAddModal(); closeEditHolding(); closePurchaseSim();"></div>
     <!-- 銘柄詳細モーダル -->
     <div id="stockDetailModal" class="modal-content">
         <div class="modal-header">
@@ -445,6 +480,24 @@
             <button class="btn btn-primary" id="analyzeBtn" onclick="performOCR()">分析する</button>
         </div>
     </div>
+    <!-- 買った場合のシミュレーション -->
+    <div id="purchaseSimModal" class="modal-content">
+        <div class="modal-header">
+            <h2>買った場合の影響</h2>
+            <button class="modal-close" onclick="closePurchaseSim()">✕</button>
+        </div>
+        <div class="modal-body">
+            <p id="simName" style="font-size: 15px; font-weight: 700; margin: 0 0 4px 0;"></p>
+            <p id="simHeldNote" style="font-size: 12px; color: var(--text-sub); margin: 0 0 16px 0;"></p>
+            <label style="font-size: 13px; color: var(--text-sub);">買う株数</label>
+            <input type="number" id="simShares" min="1" value="100" inputmode="numeric" oninput="runPurchaseSim()"
+                   style="width: 100%; padding: 11px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 16px; margin: 6px 0 18px 0;">
+            <div id="simResult"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closePurchaseSim()">閉じる</button>
+        </div>
+    </div>
     <!-- 保有内容の編集モーダル -->
     <div id="editHoldingModal" class="modal-content">
         <div class="modal-header">
@@ -510,6 +563,6 @@
             <button class="btn btn-primary" onclick="submitManualAdd()"><span id="manualSubmitLabel">追加する</span></button>
         </div>
     </div>
-    <script src="main.js?v=16"></script>
+    <script src="main.js?v=17"></script>
 </body>
 </html>

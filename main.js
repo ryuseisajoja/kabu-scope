@@ -572,7 +572,10 @@ function getBenefitInfo(code) {
     }
     // フォールバック: 旧来の文字列データ（benefits.json 未読込やカバー外向け）
     if (typeof BENEFIT_DATA !== 'undefined' && BENEFIT_DATA[code]) {
-        return { content: BENEFIT_DATA[code], minShares: null, months: [], kind: '' };
+        const text = BENEFIT_DATA[code];
+        // 「優待は廃止済」のような注記は優待ではないので、対象として扱わない
+        if (/廃止|中止|終了|優待なし|優待は無し/.test(text)) return null;
+        return { content: text, minShares: null, months: [], kind: '' };
     }
     return null;
 }
@@ -804,7 +807,7 @@ function switchPage(pageId) {
     if (target) target.classList.add('active');
 
     document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
-    const navIndex = { 'dashboard': 0, 'portfolio': 1, 'history': 2, 'ai-analysis': 3, 'recommend': 4, 'dividend': 5, 'ai-chat': 6, 'guide': 7 };
+    const navIndex = { 'dashboard': 0, 'portfolio': 1, 'history': 2, 'ai-analysis': 3, 'unit-plan': 4, 'recommend': 5, 'dividend': 6, 'ai-chat': 7, 'guide': 8 };
     if (navIndex[pageId] !== undefined) {
         const items = document.querySelectorAll('.nav-item');
         if (items[navIndex[pageId]]) items[navIndex[pageId]].classList.add('active');
@@ -826,6 +829,7 @@ function switchPage(pageId) {
     if (pageId === 'ai-analysis') updateAIAnalysis();
     if (pageId === 'recommend') updateRecommendationsDisplay();
     if (pageId === 'dividend') renderDividendPage();
+    if (pageId === 'unit-plan') renderUnitPlan();
 
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -1488,6 +1492,268 @@ function renderNextActions(actions) {
     if (!list || !card) return;
     card.style.display = 'block';
     list.innerHTML = actions.map(a => `<li>${a}</li>`).join('');
+}
+
+// ===== 単元達成プランナー =====
+// 日本株の売買単位は原則100株。1株単位で買えるサービスが増えた一方、
+// 株主優待や議決権は1単元（100株）からのものが多く、そこまでの距離が見えづらい。
+const TRADING_UNIT = 100;
+
+// 保有銘柄ごとに「単元まであと何株・いくら・達成すると何が得られるか」を計算する
+function buildUnitPlan() {
+    return getPortfolio()
+        .filter(s => normalizeSector(s.sector) !== 'ETF')
+        .map(stock => {
+            const shortage = Math.max(0, TRADING_UNIT - stock.shares);
+            const cost = Math.round(shortage * stock.currentPrice);
+            const benefit = getBenefitInfo(stock.code);
+            const div = getDividendInfo(stock.code);
+            // 優待は100株以外（200株など）が条件のこともある
+            const benefitNeed = benefit ? (benefit.minShares || TRADING_UNIT) : null;
+            const benefitShortage = benefitNeed ? Math.max(0, benefitNeed - stock.shares) : null;
+            return {
+                stock,
+                shortage,
+                cost,
+                achieved: shortage === 0,
+                progress: Math.min(100, stock.shares / TRADING_UNIT * 100),
+                benefit,
+                benefitNeed,
+                benefitShortage,
+                benefitCost: benefitShortage ? Math.round(benefitShortage * stock.currentPrice) : 0,
+                dividendGain: div.perShare > 0 ? Math.round(div.perShare * shortage) : 0
+            };
+        })
+        .sort((a, b) => {
+            if (a.achieved !== b.achieved) return a.achieved ? 1 : -1; // 未達成を上に
+            return a.cost - b.cost;                                    // 少ない金額で届く順
+        });
+}
+
+function renderUnitPlan() {
+    const summary = document.getElementById('unitSummary');
+    const list = document.getElementById('unitList');
+    if (!summary || !list) return;
+
+    const rows = buildUnitPlan();
+    const pending = rows.filter(r => !r.achieved);
+    const totalCost = pending.reduce((s, r) => s + r.cost, 0);
+
+    if (rows.length === 0) {
+        summary.innerHTML = '<p style="color: var(--text-sub); font-size: 14px; line-height: 1.8;">保有銘柄がありません。ダッシュボードから追加すると、単元までの距離を表示します。</p>';
+        list.innerHTML = '';
+        document.getElementById('unitBudgetResult').innerHTML = '';
+        return;
+    }
+
+    if (pending.length === 0) {
+        summary.innerHTML = `<p style="font-size: 14px; line-height: 1.8;"><strong>保有${rows.length}銘柄すべてが1単元（100株）以上です。</strong><br>
+            <span style="color: var(--text-sub);">株主優待や議決権の条件を満たしています。</span></p>`;
+    } else {
+        const withBenefit = pending.filter(r => r.benefit).length;
+        summary.innerHTML = `<p style="font-size: 14px; line-height: 1.9; margin: 0;">
+            単元未満は<strong>${pending.length}銘柄</strong>（保有${rows.length}銘柄中）。
+            すべてを100株にするには<strong>約${formatYen(totalCost)}</strong>が必要です。<br>
+            <span style="color: var(--text-sub);">${withBenefit > 0
+                ? `うち${withBenefit}銘柄は単元化すると株主優待の対象になります。`
+                : '単元化すると議決権が得られます。'}</span></p>`;
+    }
+
+    list.innerHTML = rows.map(r => {
+        const s = r.stock;
+        const color = r.achieved ? 'var(--gain)' : r.progress >= 50 ? 'var(--warn)' : 'var(--primary-color)';
+        const rewards = [];
+        if (r.benefit && r.benefitShortage === 0) rewards.push(`優待: ${escapeHtml(r.benefit.content || '対象')}`);
+        else if (r.benefit) rewards.push(`あと${r.benefitShortage}株で優待（${escapeHtml(r.benefit.content || '内容は要確認')}）`);
+        if (!r.achieved) rewards.push('100株で議決権');
+        if (r.dividendGain > 0) rewards.push(`配当が年${formatYen(r.dividendGain)}増える見込み`);
+
+        return `
+        <div class="unit-row">
+            <div class="unit-head">
+                <span class="unit-name">${escapeHtml(s.name)}<span class="unit-code">${escapeHtml(s.code)}</span></span>
+                <span class="unit-count" style="color: ${color};">${s.shares.toLocaleString()}<span>/100株</span></span>
+            </div>
+            <div class="unit-bar"><span style="width: ${r.progress}%; background-color: ${color};"></span></div>
+            ${r.achieved
+                ? '<p class="unit-note" style="color: var(--gain);">1単元を達成しています</p>'
+                : `<p class="unit-note"><strong>あと${r.shortage}株・約${formatYen(r.cost)}</strong>（現在値 ${formatPrice(s.currentPrice)}）</p>`}
+            ${rewards.length ? `<p class="unit-reward">${rewards.join(' ・ ')}</p>` : ''}
+            ${r.achieved ? '' : `<button class="unit-sim-btn" onclick="openPurchaseSim('${escapeHtml(s.code)}', ${r.shortage})">買った場合の影響を見る</button>`}
+        </div>`;
+    }).join('');
+
+    renderUnitBudget(pending);
+}
+
+// 予算内で単元化できる組み合わせを提案する（必要額が少なく、優待が付く銘柄を優先）
+function renderUnitBudget(pending) {
+    const box = document.getElementById('unitBudgetResult');
+    if (!box) return;
+    const budget = parseFloat((document.getElementById('unitBudget') || {}).value);
+    if (!budget || budget <= 0) { box.innerHTML = ''; return; }
+    if (pending.length === 0) {
+        box.innerHTML = '<p style="font-size: 13px; color: var(--text-sub);">単元未満の銘柄はありません。</p>';
+        return;
+    }
+
+    // 優待が付く銘柄を先に、その中で必要金額が少ない順に詰めていく
+    const ranked = [...pending].sort((a, b) => {
+        const ab = a.benefit ? 0 : 1, bb = b.benefit ? 0 : 1;
+        if (ab !== bb) return ab - bb;
+        return a.cost - b.cost;
+    });
+
+    const picked = [];
+    let rest = budget;
+    for (const r of ranked) {
+        if (r.cost > 0 && r.cost <= rest) { picked.push(r); rest -= r.cost; }
+    }
+
+    if (picked.length === 0) {
+        const cheapest = [...pending].sort((a, b) => a.cost - b.cost)[0];
+        box.innerHTML = `<p style="font-size: 13px; line-height: 1.8; color: var(--text-sub);">
+            ${formatYen(budget)}では単元化できる銘柄がありませんでした。<br>
+            一番少ない金額で届くのは<strong>${escapeHtml(cheapest.stock.name)}</strong>で、約${formatYen(cheapest.cost)}（あと${cheapest.shortage}株）です。</p>`;
+        return;
+    }
+
+    const used = budget - rest;
+    box.innerHTML = `
+        <p style="font-size: 13px; line-height: 1.8; margin: 0 0 10px 0;">
+            ${formatYen(budget)}なら<strong>${picked.length}銘柄</strong>を単元化できます（合計 約${formatYen(used)}・残り ${formatYen(rest)}）。
+        </p>
+        <ol class="next-actions">
+            ${picked.map(r => `<li><strong>${escapeHtml(r.stock.name)}</strong>をあと${r.shortage}株（約${formatYen(r.cost)}）${r.benefit ? `<br><span style="color: var(--text-sub); font-size: 13px;">優待: ${escapeHtml(r.benefit.content || '対象になります')}</span>` : ''}</li>`).join('')}
+        </ol>`;
+}
+
+// ===== 「もし買ったら」シミュレーター =====
+// 買う前に、集中度・セクター分散・配当がどう変わるかを見られるようにする
+function computePortfolioMetrics(portfolio) {
+    const total = portfolio.reduce((s, v) => s + v.currentPrice * v.shares, 0);
+    if (total <= 0) return { total: 0, topPct: 0, topName: '—', sectors: 0, topSectorPct: 0, topSector: '—', annualDividend: 0, yieldPct: 0, count: portfolio.length };
+
+    const top = [...portfolio].sort((a, b) => (b.currentPrice * b.shares) - (a.currentPrice * a.shares))[0];
+    const sectorMap = {};
+    portfolio.forEach(s => {
+        const sec = normalizeSector(s.sector || '不明');
+        sectorMap[sec] = (sectorMap[sec] || 0) + s.currentPrice * s.shares;
+    });
+    const sectorTop = Object.entries(sectorMap).sort((a, b) => b[1] - a[1])[0];
+    const annualDividend = portfolio.reduce((sum, s) => {
+        const d = getDividendInfo(s.code);
+        return sum + (d.perShare > 0 ? d.perShare * s.shares : 0);
+    }, 0);
+
+    return {
+        total,
+        topPct: (top.currentPrice * top.shares) / total * 100,
+        topName: top.name,
+        sectors: Object.keys(sectorMap).length,
+        topSectorPct: sectorTop[1] / total * 100,
+        topSector: sectorTop[0],
+        annualDividend: Math.round(annualDividend),
+        yieldPct: annualDividend / total * 100,
+        count: portfolio.length
+    };
+}
+
+let SIM_CODE = null;
+
+function openPurchaseSim(code, shares) {
+    SIM_CODE = code;
+    const info = getMasterInfo(code);
+    const held = getPortfolio().find(s => s.code === code);
+    document.getElementById('simName').textContent = info ? `${info.name}（${code}）` : code;
+    const input = document.getElementById('simShares');
+    input.value = shares || TRADING_UNIT;
+    document.getElementById('modalOverlay').style.display = 'block';
+    document.getElementById('purchaseSimModal').style.display = 'block';
+    document.getElementById('simHeldNote').textContent = held
+        ? `現在 ${held.shares.toLocaleString()}株を保有中（現在値 ${formatPrice(held.currentPrice)}）`
+        : 'まだ保有していない銘柄です';
+    runPurchaseSim();
+}
+
+function closePurchaseSim() {
+    SIM_CODE = null;
+    document.getElementById('modalOverlay').style.display = 'none';
+    document.getElementById('purchaseSimModal').style.display = 'none';
+}
+
+async function runPurchaseSim() {
+    if (!SIM_CODE) return;
+    const box = document.getElementById('simResult');
+    const shares = parseInt(document.getElementById('simShares').value, 10);
+    if (!shares || shares <= 0) { box.innerHTML = '<p style="color: var(--text-sub); font-size: 13px;">株数を入力してください。</p>'; return; }
+
+    const portfolio = getPortfolio();
+    const held = portfolio.find(s => s.code === SIM_CODE);
+    let price = held ? held.currentPrice : 0;
+    if (!price) {
+        box.innerHTML = '<p style="color: var(--text-sub); font-size: 13px;">株価を取得しています...</p>';
+        try {
+            const q = await fetchQuote(SIM_CODE);
+            price = q.price;
+        } catch (e) {
+            box.innerHTML = '<p style="color: var(--loss); font-size: 13px;">株価を取得できませんでした。時間をおいてお試しください。</p>';
+            return;
+        }
+        await ensureDividendData([SIM_CODE]);
+    }
+
+    const info = getMasterInfo(SIM_CODE);
+    const before = computePortfolioMetrics(portfolio);
+    const after = computePortfolioMetrics([
+        ...portfolio.filter(s => s.code !== SIM_CODE),
+        {
+            code: SIM_CODE,
+            name: info ? info.name : SIM_CODE,
+            sector: info ? info.sector : '不明',
+            shares: (held ? held.shares : 0) + shares,
+            currentPrice: price,
+            acquisitionPrice: held ? held.acquisitionPrice : price
+        }
+    ]);
+
+    const cost = Math.round(shares * price);
+    const row = (label, b, a, fmt, betterWhenLower) => {
+        const diff = a - b;
+        const same = Math.abs(diff) < 0.05;
+        const good = betterWhenLower ? diff < 0 : diff > 0;
+        const color = same ? 'var(--text-sub)' : good ? 'var(--gain)' : 'var(--loss)';
+        return `<div class="sim-row">
+            <span class="sim-label">${label}</span>
+            <span class="sim-values"><span class="sim-before">${fmt(b)}</span>
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+            <strong style="color: ${color};">${fmt(a)}</strong></span>
+        </div>`;
+    };
+
+    const pct = v => v.toFixed(1) + '%';
+    const yen = v => formatYen(v);
+    const num = v => String(v);
+
+    box.innerHTML = `
+        <p class="sim-cost">必要な資金 <strong>約${formatYen(cost)}</strong>（${shares.toLocaleString()}株 × ${formatPrice(price)}）</p>
+        ${row('最大銘柄の比率', before.topPct, after.topPct, pct, true)}
+        ${row('保有銘柄数', before.count, after.count, num, false)}
+        ${row('セクター数', before.sectors, after.sectors, num, false)}
+        ${row(`最大セクター（${escapeHtml(after.topSector)}）`, before.topSectorPct, after.topSectorPct, pct, true)}
+        ${row('年間配当', before.annualDividend, after.annualDividend, yen, false)}
+        ${row('配当利回り', before.yieldPct, after.yieldPct, pct, false)}
+        <p class="sim-note">${buildSimComment(before, after, shares)}</p>`;
+}
+
+function buildSimComment(before, after, shares) {
+    const notes = [];
+    if (after.topPct < before.topPct - 0.5) notes.push('特定銘柄への集中が下がり、分散が改善します。');
+    if (after.topPct > before.topPct + 3) notes.push(`購入後は最大銘柄の比率が${after.topPct.toFixed(1)}%になります。30%を超えると1銘柄の値動きの影響が大きくなります。`);
+    if (after.sectors > before.sectors) notes.push('新しい業種が加わり、景気変動に対する耐性が上がります。');
+    if (after.annualDividend > before.annualDividend) notes.push(`年間配当が${formatYen(after.annualDividend - before.annualDividend)}増える見込みです。`);
+    if (shares >= TRADING_UNIT) notes.push('100株以上になるため、議決権と（対象銘柄なら）株主優待の条件を満たします。');
+    return notes.length ? notes.join(' ') : '大きな変化はありません。';
 }
 
 // ===== 推奨銘柄 =====
