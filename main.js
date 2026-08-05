@@ -1789,6 +1789,153 @@ function practiceSell(code) {
 // 練習用の株価は本番と同じ取得経路を使う
 let PRACTICE_PRICES = {};
 
+// ===== 練習成績の記録と、日経平均との比較 =====
+// 日経平均そのもの（^N225）は中継サーバーの許可パス外のため、
+// 日経225に連動するETF（1321）を指標として使う
+const BENCHMARK_CODE = '1321';
+const BENCHMARK_NAME = '日経平均（連動ETF）';
+const BENCHMARK_CACHE_KEY = 'benchmarkSeries';
+const BENCHMARK_TTL_MS = 6 * 60 * 60 * 1000;
+
+// 1日1回、その日の資産合計を記録する
+function recordPracticeSnapshot(state, totalAsset) {
+    const today = new Date().toISOString().slice(0, 10);
+    if (!Array.isArray(state.history)) state.history = [];
+    const last = state.history[state.history.length - 1];
+    if (last && last.d === today) last.v = totalAsset;
+    else state.history.push({ d: today, v: totalAsset });
+    state.history = state.history.slice(-400);
+}
+
+async function fetchBenchmarkSeries() {
+    try {
+        const cached = JSON.parse(localStorage.getItem(BENCHMARK_CACHE_KEY) || 'null');
+        if (cached && Date.now() - cached.t < BENCHMARK_TTL_MS && Array.isArray(cached.series)) return cached.series;
+    } catch (e) { /* キャッシュが壊れていれば取り直す */ }
+
+    const url = `${priceApiBase()}/v8/finance/chart/${BENCHMARK_CODE}.T?range=1y&interval=1d`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    const result = json && json.chart && json.chart.result && json.chart.result[0];
+    if (!result || !result.timestamp) throw new Error('no data');
+    const closes = result.indicators.quote[0].close;
+    const series = result.timestamp
+        .map((ts, i) => ({ d: new Date(ts * 1000).toISOString().slice(0, 10), c: closes[i] }))
+        .filter(p => typeof p.c === 'number');
+    localStorage.setItem(BENCHMARK_CACHE_KEY, JSON.stringify({ t: Date.now(), series }));
+    return series;
+}
+
+// 練習の記録日に合わせて指標の終値を並べ、開始日を100として比較できる形にする
+function buildPracticeComparison(history, series) {
+    if (!history || history.length === 0) return null;
+    const closeOnOrBefore = date => {
+        let value = null;
+        for (const p of series) {
+            if (p.d <= date) value = p.c; else break;
+        }
+        return value !== null ? value : (series.length ? series[0].c : null);
+    };
+
+    const dates = history.map(h => h.d);
+    const baseMine = history[0].v;
+    const baseBench = closeOnOrBefore(dates[0]);
+    if (!baseMine || !baseBench) return null;
+
+    return {
+        dates,
+        mine: history.map(h => h.v / baseMine * 100),
+        bench: dates.map(d => closeOnOrBefore(d) / baseBench * 100),
+        mineReturn: (history[history.length - 1].v / baseMine - 1) * 100,
+        benchReturn: (closeOnOrBefore(dates[dates.length - 1]) / baseBench - 1) * 100
+    };
+}
+
+function renderPracticeChart(cmp) {
+    const box = document.getElementById('practiceChart');
+    if (!box) return;
+    if (!cmp || cmp.dates.length < 2) {
+        box.innerHTML = `<p style="color: var(--text-sub); font-size: 13px; line-height: 1.8;">
+            成績のグラフは<strong>2日分以上の記録</strong>がたまると表示されます。
+            このページを開いた日の資産合計が自動で記録されます。</p>`;
+        return;
+    }
+
+    const W = 720, H = 260, P = { l: 46, r: 14, t: 16, b: 30 };
+    const all = cmp.mine.concat(cmp.bench);
+    let min = Math.min(...all), max = Math.max(...all);
+    if (min === max) { min -= 1; max += 1; }
+    const pad = (max - min) * 0.12;
+    min -= pad; max += pad;
+    const n = cmp.dates.length;
+    const x = i => P.l + (n === 1 ? (W - P.l - P.r) / 2 : i * (W - P.l - P.r) / (n - 1));
+    const y = v => P.t + (H - P.t - P.b) * (1 - (v - min) / (max - min));
+    const line = arr => arr.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+
+    let grid = '';
+    for (let g = 0; g <= 2; g++) {
+        const v = min + (max - min) * g / 2;
+        grid += `<line x1="${P.l}" y1="${y(v).toFixed(1)}" x2="${W - P.r}" y2="${y(v).toFixed(1)}" stroke="#E5E9E6" stroke-width="1"/>
+                 <text x="${P.l - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="#6B7280">${v.toFixed(0)}</text>`;
+    }
+
+    box.innerHTML = `
+        <svg viewBox="0 0 ${W} ${H}" style="width: 100%; height: auto;">
+            ${grid}
+            <polyline points="${line(cmp.bench)}" fill="none" stroke="#9AA5A0" stroke-width="2" stroke-dasharray="5 4"/>
+            <polyline points="${line(cmp.mine)}" fill="none" stroke="#1E7A4E" stroke-width="2.5"/>
+            <text x="${P.l}" y="${H - 8}" font-size="11" fill="#6B7280">${cmp.dates[0]}</text>
+            <text x="${W - P.r}" y="${H - 8}" text-anchor="end" font-size="11" fill="#6B7280">${cmp.dates[n - 1]}</text>
+        </svg>
+        <div class="chart-legend">
+            <span><i style="background-color: #1E7A4E;"></i>あなたの練習成績</span>
+            <span><i style="background-color: #9AA5A0;"></i>${BENCHMARK_NAME}</span>
+        </div>
+        <p style="font-size: 12px; color: var(--text-sub); margin: 8px 0 0 0; line-height: 1.7;">
+            記録を始めた日を100として比べています。線が上にあるほど成績が良いという意味です。</p>`;
+}
+
+async function renderPracticeBenchmark(state, totalAsset) {
+    const box = document.getElementById('practiceBenchmark');
+    if (!box) return;
+    let cmp = null;
+    try {
+        const series = await fetchBenchmarkSeries();
+        cmp = buildPracticeComparison(state.history, series);
+    } catch (e) {
+        box.innerHTML = '<p style="color: var(--text-sub); font-size: 13px;">指標のデータを取得できませんでした。</p>';
+        renderPracticeChart(null);
+        return;
+    }
+
+    if (!cmp) { box.innerHTML = ''; renderPracticeChart(null); return; }
+
+    const diff = cmp.mineReturn - cmp.benchReturn;
+    const win = diff >= 0;
+    box.innerHTML = `
+        <div class="bench-compare">
+            <div>
+                <span>あなたの練習成績</span>
+                <strong style="color: ${cmp.mineReturn >= 0 ? 'var(--gain)' : 'var(--loss)'};">${cmp.mineReturn >= 0 ? '+' : ''}${cmp.mineReturn.toFixed(2)}%</strong>
+            </div>
+            <div>
+                <span>${BENCHMARK_NAME}</span>
+                <strong style="color: var(--text-sub);">${cmp.benchReturn >= 0 ? '+' : ''}${cmp.benchReturn.toFixed(2)}%</strong>
+            </div>
+            <div>
+                <span>差</span>
+                <strong style="color: ${win ? 'var(--gain)' : 'var(--loss)'};">${win ? '+' : ''}${diff.toFixed(2)}%</strong>
+            </div>
+        </div>
+        <p class="bench-note">${cmp.dates.length < 2
+            ? '記録が2日分たまると推移のグラフも表示されます。'
+            : win
+                ? '市場全体より良い成績です。ただし短い期間の結果は運の影響も大きいので、続けて記録してみましょう。'
+                : '市場全体より低い成績です。個別銘柄は値動きが大きいので、分散できているか確認してみましょう。'}</p>`;
+    renderPracticeChart(cmp);
+}
+
 async function renderPracticePage() {
     const state = getPractice();
     const initialInput = document.getElementById('practiceInitial');
@@ -1813,6 +1960,11 @@ async function renderPracticePage() {
     const totalAsset = state.cash + marketValue;
     const unrealized = rows.reduce((s, r) => s + r.gain, 0);
     const totalReturn = state.initial > 0 ? (totalAsset - state.initial) / state.initial * 100 : 0;
+
+    // その日の成績を記録し、指標との比較を更新する
+    recordPracticeSnapshot(state, totalAsset);
+    savePractice(state);
+    renderPracticeBenchmark(state, totalAsset);
 
     const stats = document.getElementById('practiceStats');
     if (stats) {

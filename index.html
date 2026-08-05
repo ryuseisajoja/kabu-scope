@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=20">
+    <link rel="stylesheet" href="style.css?v=21">
     <script async src="https://cdn.jsdelivr.net/npm/tesseract.js@v5.0.4/dist/tesseract.min.js"></script>
 </head>
 <body>
@@ -227,6 +227,11 @@
                 <span>ここでの売買は<strong>練習用の記録だけ</strong>で、ダッシュボードの保有銘柄には一切影響しません。</span>
             </div>
             <div class="stats-grid" id="practiceStats"></div>
+            <div class="card-container">
+                <h3 class="card-title">日経平均との比較</h3>
+                <div id="practiceBenchmark"></div>
+                <div id="practiceChart" style="margin-top: 14px;"></div>
+            </div>
             <div class="card-container">
                 <h3 class="card-title">銘柄を買う</h3>
                 <input type="text" id="practiceSearchInput" placeholder="銘柄名またはコードで検索（例: トヨタ / 7203）" autocomplete="off" oninput="renderPracticeSearch()"
@@ -643,6 +648,6 @@
             <button class="btn btn-primary" onclick="submitManualAdd()"><span id="manualSubmitLabel">追加する</span></button>
         </div>
     </div>
-    <script src="main.js?v=20"></script>
+    <script src="main.js?v=21"></script>
 </body>
 </html>
