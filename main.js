@@ -464,16 +464,22 @@ function getPriceCache() {
     return JSON.parse(localStorage.getItem(PRICE_CACHE_KEY) || '{}');
 }
 
-// ===== 株価の取得元（自前の中継サーバーを設定できるようにする） =====
+// ===== 株価の取得元 =====
+// 株価データをまとめてリポジトリに置いて配信するのをやめ、この中継サーバー経由で
+// 保有銘柄の分だけその都度取得する（中継サーバーのコードは worker/price-proxy.js）。
+// ブラウザから株価APIを直接呼ぶとCORSで拒否されるため、中継が必要。
+const DEFAULT_PRICE_PROXY = 'https://kabu-scope.ryusei30saku.workers.dev';
 const PROXY_STORAGE_KEY = 'priceProxyBase';
 
+// 利用者が設定した取得元（未設定なら空文字）
 function getPriceProxyBase() {
     const v = localStorage.getItem(PROXY_STORAGE_KEY) || '';
     return v.replace(/\/+$/, '');
 }
 
+// 実際に使う取得元。端末ごとに設定しなくても動くよう既定値を持たせる
 function priceApiBase() {
-    return getPriceProxyBase() || 'https://query1.finance.yahoo.com';
+    return getPriceProxyBase() || DEFAULT_PRICE_PROXY;
 }
 
 async function fetchQuote(code) {
@@ -492,23 +498,6 @@ async function fetchQuote(code) {
         name: meta.longName || meta.shortName || null,
         time: Date.now()
     };
-}
-
-// GitHub Actionsが生成する株価スナップショット
-// - prices.json     … 人気銘柄（30分ごと更新）
-// - prices_all.json … 全上場銘柄（1日1回更新）
-// httpsでホストされている場合、Yahoo Finance直アクセスはCORSでブロックされるため、
-// 同一オリジンのスナップショットにフォールバックする
-const PRICE_SNAPSHOTS = {};
-async function loadSnapshotFile(file) {
-    if (PRICE_SNAPSHOTS[file] !== undefined) return PRICE_SNAPSHOTS[file];
-    try {
-        const res = await fetch(file + '?t=' + Math.floor(Date.now() / 60000));
-        PRICE_SNAPSHOTS[file] = res.ok ? await res.json() : false;
-    } catch (e) {
-        PRICE_SNAPSHOTS[file] = false;
-    }
-    return PRICE_SNAPSHOTS[file];
 }
 
 // 全上場銘柄マスター（JPX公式リストから生成、GitHub Actionsが週次更新）
@@ -535,16 +524,17 @@ function getMasterInfo(code) {
     return null;
 }
 
-// 全銘柄の配当データ（GitHub Actionsが週次更新）
+// 配当データ。全銘柄分をまとめて配信するのはやめ、保有銘柄の分だけ
+// 中継サーバー経由で取得して端末にキャッシュする（ensureDividendData が埋める）
 // 形式: { "7203": { d: 1株配当, y: 利回り% }, ... }
 let FULL_DIVIDENDS = null;
 async function loadDividends() {
     if (FULL_DIVIDENDS !== null) return FULL_DIVIDENDS;
-    try {
-        const res = await fetch('dividends.json?t=' + Math.floor(Date.now() / 3600000));
-        FULL_DIVIDENDS = res.ok ? (await res.json()).dividends : false;
-    } catch (e) {
-        FULL_DIVIDENDS = false;
+    // 端末に残っているキャッシュを起動時に読み込む
+    const cache = getDividendCache();
+    FULL_DIVIDENDS = {};
+    for (const [code, v] of Object.entries(cache)) {
+        if (v && v.d > 0) FULL_DIVIDENDS[code] = { d: v.d, y: v.y };
     }
     return FULL_DIVIDENDS;
 }
@@ -632,7 +622,6 @@ async function fetchDividendFromApi(code) {
 }
 
 async function ensureDividendData(codes) {
-    if (!getPriceProxyBase()) return; // 未設定なら配信中の dividends.json を使う
     const cache = getDividendCache();
     const now = Date.now();
     const targets = [...new Set(codes)].filter(c => !cache[c] || now - (cache[c].t || 0) > DIVIDEND_TTL_MS);
@@ -704,45 +693,18 @@ async function fetchRealTimePrices(codes, force = false) {
     }
 
     if (toFetch.length > 0) {
-        // 1) Yahoo Financeへ直接（file://やlocalhostで動作。httpsではCORSで失敗する）
+        // 中継サーバー経由で保有銘柄の株価を取得する。
+        // 株価をまとめたファイルは配信しないため、取得できなかった銘柄は
+        // 前回取得できた値（キャッシュ）をそのまま使う
         const settled = await Promise.allSettled(toFetch.map(fetchQuote));
-        const missing = [];
         settled.forEach((s, i) => {
             if (s.status === 'fulfilled') {
                 result[toFetch[i]] = s.value;
                 cache[toFetch[i]] = s.value;
-            } else {
-                missing.push(toFetch[i]);
+            } else if (cache[toFetch[i]]) {
+                result[toFetch[i]] = { ...cache[toFetch[i]], stale: true };
             }
         });
-
-        // 2) 取れなかった銘柄はスナップショット（GitHub Actionsが定期更新）から補完
-        //    prices.json（人気銘柄・30分ごと）→ prices_all.json（全銘柄・日次）の順
-        let stillMissing = missing;
-        for (const file of ['prices.json', 'prices_all.json']) {
-            if (stillMissing.length === 0) break;
-            const snap = await loadSnapshotFile(file);
-            if (!snap || !snap.prices) continue;
-            const snapTime = Date.parse(snap.updated) || now;
-            const next = [];
-            for (const code of stillMissing) {
-                const q = snap.prices[code];
-                if (q) {
-                    result[code] = {
-                        code,
-                        price: q.price,
-                        previousClose: q.previousClose,
-                        changePercent: q.changePercent,
-                        name: null,
-                        time: snapTime,
-                        snapshot: true
-                    };
-                } else {
-                    next.push(code);
-                }
-            }
-            stillMissing = next;
-        }
 
         localStorage.setItem(PRICE_CACHE_KEY, JSON.stringify(cache));
     }
@@ -3102,8 +3064,8 @@ function updateDataSettingsUI() {
     if (input && document.activeElement !== input) input.value = base;
     if (proxyStatus) {
         proxyStatus.textContent = base
-            ? `現在の取得元: ${base}（保有銘柄の株価をその都度取得します）`
-            : '現在の取得元: 当サイトの株価スナップショット（未設定）';
+            ? `現在の取得元: ${base}（自分で設定したもの）`
+            : `現在の取得元: ${DEFAULT_PRICE_PROXY}（標準）`;
     }
 }
 

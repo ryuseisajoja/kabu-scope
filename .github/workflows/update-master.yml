@@ -1,0 +1,49 @@
+name: 銘柄マスター更新
+
+# 銘柄コードと名称の一覧（master.json）だけを更新する。
+# 株価と配当は、以前はここでまとめて取得して JSON をコミットしていたが、
+# データの再配布に当たるため取りやめ、閲覧時に中継サーバー経由で
+# 保有銘柄の分だけ取得する方式に変更した（worker/README.md 参照）。
+# master.json は JPX が公表している上場銘柄一覧から生成している。
+
+on:
+  schedule:
+    # 週次（毎週土曜 JST 9:15 = UTC 0:15）。上場・廃止の反映はこの頻度で十分
+    - cron: '15 0 * * 6'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-master
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 全銘柄マスターを更新（JPX公式リスト）
+        run: |
+          npm install xlsx --no-save --silent
+          node scripts/fetch_master.mjs
+
+      - name: 変更があればコミット
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add master.json
+          if git diff --cached --quiet; then
+            echo "変更なし"
+            exit 0
+          fi
+          git commit -m "chore: 銘柄マスター更新 [skip ci]"
+          git pull --rebase origin main || true
+          git push

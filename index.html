@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=13">
+    <link rel="stylesheet" href="style.css?v=14">
     <script async src="https://cdn.jsdelivr.net/npm/tesseract.js@v5.0.4/dist/tesseract.min.js"></script>
 </head>
 <body>
@@ -82,9 +82,10 @@
             <div class="card-container">
                 <h3 class="card-title">株価の取得元（上級者向け）</h3>
                 <p style="font-size: 13px; line-height: 1.8; color: var(--text-sub); margin: 0 0 12px 0;">
-                    通常は当サイトが用意した株価スナップショットを使います。自分で用意した中継サーバー（プロキシ）のURLを設定すると、
-                    <strong>保有銘柄の株価だけをその都度取得</strong>する方式に切り替わります。設定方法は
-                    <code style="font-size: 12px;">worker/README.md</code> を参照してください。
+                    株価と配当は<strong>保有銘柄の分だけ、表示するたびに中継サーバー経由で取得</strong>しています
+                    （データをまとめて配信することはしていません）。通常は設定不要です。
+                    自分で用意した中継サーバーを使う場合のみ、そのURLを入力してください。作り方は
+                    <code style="font-size: 12px;">worker/README.md</code> にあります。
                 </p>
                 <input type="text" id="proxyBaseInput" placeholder="https://xxxxx.workers.dev" autocomplete="off"
                        style="width: 100%; padding: 11px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 14px; margin-bottom: 10px;">
@@ -483,6 +484,6 @@
             <button class="btn btn-primary" onclick="submitManualAdd()"><span id="manualSubmitLabel">追加する</span></button>
         </div>
     </div>
-    <script src="main.js?v=13"></script>
+    <script src="main.js?v=14"></script>
 </body>
 </html>
