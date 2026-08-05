@@ -456,6 +456,16 @@ function formatYen(value) {
     return '¥' + Math.round(value).toLocaleString();
 }
 
+// 1株あたりの単価表示。株価には小数があるため（152.5円など）、整数に丸めると
+// 「取得単価と現在値の差×株数」が画面の評価損益と合わなくなる。小数はそのまま出す
+function formatPrice(value) {
+    if (typeof value !== 'number' || !isFinite(value)) return '¥0';
+    const v = Math.round(value * 100) / 100;
+    return '¥' + (Number.isInteger(v)
+        ? v.toLocaleString('ja-JP')
+        : v.toLocaleString('ja-JP', { minimumFractionDigits: 1, maximumFractionDigits: 2 }));
+}
+
 // ===== リアルタイム株価（Yahoo Finance） =====
 const PRICE_CACHE_KEY = 'price_cache_v1';
 const PRICE_CACHE_TTL = 5 * 60 * 1000; // 5分
@@ -892,8 +902,8 @@ function updateStockTable(portfolio) {
         <tr>
             <td><strong>${escapeHtml(stock.name)} (${escapeHtml(stock.code)})</strong>${benefitBadge}</td>
             <td>${stock.shares.toLocaleString()} 株</td>
-            <td>${formatYen(stock.acquisitionPrice)}</td>
-            <td>${formatYen(stock.currentPrice)} ${changeHtml}</td>
+            <td>${formatPrice(stock.acquisitionPrice)}</td>
+            <td>${formatPrice(stock.currentPrice)} ${changeHtml}</td>
             <td style="color: ${gainColor}; font-weight: bold;">${gainSign}${formatYen(Math.abs(gain))}</td>
             <td style="text-align: center;">
                 <button style="background: none; border: none; cursor: pointer; color: var(--text-sub); display: inline-flex; align-items: center;" onclick="removeStockFromPortfolio('${escapeHtml(stock.code)}')" title="削除"><svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
@@ -943,8 +953,8 @@ function renderHoldingCards(portfolio) {
             </div>
             <div class="holding-card-grid">
                 <div><dt>株数</dt><dd>${stock.shares.toLocaleString()}株</dd></div>
-                <div><dt>取得単価</dt><dd>${formatYen(stock.acquisitionPrice)}</dd></div>
-                <div><dt>現在値</dt><dd>${formatYen(stock.currentPrice)}</dd></div>
+                <div><dt>取得単価</dt><dd>${formatPrice(stock.acquisitionPrice)}</dd></div>
+                <div><dt>現在値</dt><dd>${formatPrice(stock.currentPrice)}</dd></div>
             </div>
             <div class="holding-card-actions">
                 <button onclick="event.stopPropagation(); removeStockFromPortfolio('${escapeHtml(stock.code)}')">
@@ -1638,7 +1648,7 @@ function openStockDetail(code) {
         const q = prices[code];
         if (q && document.getElementById('modalCode').textContent === code) {
             const yieldNow = q.price > 0 ? (data.dividend / q.price * 100).toFixed(2) : data.dividend_yield;
-            document.getElementById('modalPrice').textContent = `${data.sector} / ${formatYen(q.price)}`;
+            document.getElementById('modalPrice').textContent = `${data.sector} / ${formatPrice(q.price)}`;
             document.getElementById('modalDividend').textContent = yieldNow + '%';
         }
     }).catch(() => {});
