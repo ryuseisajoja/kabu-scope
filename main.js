@@ -833,7 +833,7 @@ function switchPage(pageId) {
 
     if (pageId === 'dashboard') updateDashboard();
     if (pageId === 'portfolio') updatePortfolioPage(getPortfolio());
-    if (pageId === 'history') renderHistoryPage();
+    if (pageId === 'history') { renderHistoryPage(); renderTradeHistory(); }
     if (pageId === 'ai-analysis') updateAIAnalysis();
     if (pageId === 'recommend') updateRecommendationsDisplay();
     if (pageId === 'dividend') renderDividendPageWithCalendar();
@@ -3308,10 +3308,154 @@ function displayOCRResults(stocks, meta = {}) {
     });
 
     container.innerHTML = html;
+
+    // 前回の保有内容と比べて増減があれば、売買として記録できるように提示する
+    renderTradeDiff(diffAgainstPortfolio(stocks));
 }
 
 function toggleAllOCR(checked) {
     document.querySelectorAll('.ocr-select').forEach(cb => { cb.checked = checked; });
+}
+
+// ===== スクショ差分から売買を記録 =====
+// 証券会社のAPIを使わずに取引履歴を作るための仕組み。
+// 前回の保有内容と今回読み取った内容を比べ、増減を売買として記録する。
+const TRADE_LOG_KEY = 'tradeLog';
+
+function getTradeLog() {
+    try {
+        return JSON.parse(localStorage.getItem(TRADE_LOG_KEY) || '[]');
+    } catch (e) {
+        return [];
+    }
+}
+
+function saveTradeLog(log) {
+    localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(log.slice(-500)));
+}
+
+// 読み取り結果と現在の保有を比較して、変化のある銘柄を洗い出す
+function diffAgainstPortfolio(scanned) {
+    const portfolio = getPortfolio();
+    const held = new Map(portfolio.map(s => [s.code, s]));
+    const changes = [];
+
+    for (const row of scanned) {
+        if (!row.shares || row.shares <= 0) continue; // 株数が読めていない行は比較できない
+        const prev = held.get(row.code);
+        if (!prev) {
+            changes.push({ type: 'new', code: row.code, name: row.name, shares: row.shares, price: row.price, before: 0, after: row.shares });
+        } else if (row.shares > prev.shares) {
+            changes.push({
+                type: 'buy', code: row.code, name: row.name,
+                shares: row.shares - prev.shares, before: prev.shares, after: row.shares,
+                price: row.price, prevPrice: prev.acquisitionPrice
+            });
+        } else if (row.shares < prev.shares) {
+            changes.push({
+                type: 'sell', code: row.code, name: row.name,
+                shares: prev.shares - row.shares, before: prev.shares, after: row.shares,
+                price: prev.acquisitionPrice
+            });
+        }
+    }
+    return changes;
+}
+
+// 買い増しの取得単価を平均取得単価の変化から逆算する。
+// （新しい平均 × 新しい株数 − 前の平均 × 前の株数）÷ 増えた株数
+function estimateBuyPrice(change) {
+    if (change.type !== 'buy' || !change.price || !change.prevPrice) return change.price || 0;
+    const added = (change.price * change.after) - (change.prevPrice * change.before);
+    const per = added / change.shares;
+    // 逆算できない（平均取得単価が読めていない等）場合は表示中の単価を使う
+    return per > 0 ? Math.round(per * 100) / 100 : change.price;
+}
+
+function renderTradeDiff(changes) {
+    const box = document.getElementById('tradeDiffBox');
+    if (!box) return;
+    if (changes.length === 0) { box.innerHTML = ''; box.style.display = 'none'; return; }
+
+    box.style.display = 'block';
+    const label = { new: '新規', buy: '買い増し', sell: '売却' };
+    const color = { new: 'var(--primary-color)', buy: 'var(--gain)', sell: 'var(--loss)' };
+
+    box.innerHTML = `
+        <div class="trade-diff">
+            <h4>前回の保有内容との違いが${changes.length}件見つかりました</h4>
+            <p class="trade-diff-note">売買として記録すると、取引履歴と資産推移に反映されます。記録しない場合はチェックを外してください。</p>
+            ${changes.map((c, i) => {
+                const price = c.type === 'buy' ? estimateBuyPrice(c) : c.price;
+                const amount = price ? Math.round(price * c.shares) : 0;
+                return `
+                <label class="trade-row">
+                    <input type="checkbox" class="trade-check" data-index="${i}" checked>
+                    <span class="trade-body">
+                        <span class="trade-head">
+                            <strong>${escapeHtml(c.name)}</strong>
+                            <span class="trade-tag" style="background-color: ${color[c.type]};">${label[c.type]}</span>
+                        </span>
+                        <span class="trade-detail">${c.before.toLocaleString()}株 → ${c.after.toLocaleString()}株
+                            （${c.type === 'sell' ? '−' : '+'}${c.shares.toLocaleString()}株${price ? ` ・ 単価 ${formatPrice(price)} ・ 約${formatYen(amount)}` : ''}）</span>
+                    </span>
+                </label>`;
+            }).join('')}
+            <button class="btn btn-primary" style="width: 100%; margin-top: 12px;" onclick="commitTradeDiff()">選んだ変化を取引として記録する</button>
+        </div>`;
+    OCR_CHANGES = changes;
+}
+
+let OCR_CHANGES = [];
+
+function commitTradeDiff() {
+    const picked = [...document.querySelectorAll('.trade-check')]
+        .filter(cb => cb.checked)
+        .map(cb => OCR_CHANGES[parseInt(cb.dataset.index, 10)])
+        .filter(Boolean);
+    if (picked.length === 0) { alert('記録する変化を選択してください'); return; }
+
+    const log = getTradeLog();
+    const today = new Date().toISOString();
+    for (const c of picked) {
+        const price = c.type === 'buy' ? estimateBuyPrice(c) : c.price;
+        log.push({
+            date: today, code: c.code, name: c.name, type: c.type,
+            shares: c.shares, price: price || 0, before: c.before, after: c.after
+        });
+    }
+    saveTradeLog(log);
+    alert(`${picked.length}件を取引履歴に記録しました`);
+    const box = document.getElementById('tradeDiffBox');
+    if (box) { box.innerHTML = ''; box.style.display = 'none'; }
+    OCR_CHANGES = [];
+    renderTradeHistory();
+}
+
+function renderTradeHistory() {
+    const wrap = document.getElementById('tradeHistory');
+    if (!wrap) return;
+    const log = getTradeLog().slice().reverse();
+    if (log.length === 0) {
+        wrap.innerHTML = `<p style="color: var(--text-sub); font-size: 13px; line-height: 1.8;">
+            まだ取引の記録がありません。<br>
+            保有銘柄一覧のスクショを撮り直して「スクショで追加」から読み込むと、前回との違いを検出して売買として記録できます。</p>`;
+        return;
+    }
+    const label = { new: '新規', buy: '買い増し', sell: '売却' };
+    const color = { new: 'var(--primary-color)', buy: 'var(--gain)', sell: 'var(--loss)' };
+    wrap.innerHTML = log.map(t => `
+        <div class="trade-log-row">
+            <div>
+                <strong>${escapeHtml(t.name)}</strong>
+                <span class="trade-tag" style="background-color: ${color[t.type] || 'var(--text-sub)'};">${label[t.type] || ''}</span>
+                <p>${new Date(t.date).toLocaleDateString('ja-JP')} ・ ${t.before.toLocaleString()}株 → ${t.after.toLocaleString()}株</p>
+            </div>
+            <div class="trade-log-amount">
+                <strong>${t.type === 'sell' ? '−' : '+'}${t.shares.toLocaleString()}株</strong>
+                <span>${t.price ? formatPrice(t.price) : '—'}</span>
+            </div>
+        </div>`).join('');
 }
 
 // 選択された銘柄をまとめてポートフォリオへ

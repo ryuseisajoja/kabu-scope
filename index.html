@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=18">
+    <link rel="stylesheet" href="style.css?v=19">
     <script async src="https://cdn.jsdelivr.net/npm/tesseract.js@v5.0.4/dist/tesseract.min.js"></script>
 </head>
 <body>
@@ -128,6 +128,13 @@
             <div class="card-container">
                 <h3 class="card-title">評価額の推移</h3>
                 <div id="historyChart"></div>
+            </div>
+            <div class="card-container">
+                <h3 class="card-title">取引の記録</h3>
+                <p style="font-size: 13px; color: var(--text-sub); line-height: 1.7; margin: 0 0 14px 0;">
+                    保有銘柄一覧のスクショを読み込むたびに前回との差を検出し、売買として記録できます（証券会社との連携は不要です）。
+                </p>
+                <div id="tradeHistory"></div>
             </div>
             <div class="card-container">
                 <h3 class="card-title">日次履歴</h3>
@@ -486,6 +493,7 @@
                         </div>
                     </div>
                 </div>
+                <div id="tradeDiffBox" style="display: none; margin-top: 20px;"></div>
                 <div id="extractedStocks" style="margin-top: 20px;"></div>
             </div>
         </div>
@@ -577,6 +585,6 @@
             <button class="btn btn-primary" onclick="submitManualAdd()"><span id="manualSubmitLabel">追加する</span></button>
         </div>
     </div>
-    <script src="main.js?v=18"></script>
+    <script src="main.js?v=19"></script>
 </body>
 </html>
