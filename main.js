@@ -905,13 +905,68 @@ function updateStockTable(portfolio) {
             <td>${formatPrice(stock.acquisitionPrice)}</td>
             <td>${formatPrice(stock.currentPrice)} ${changeHtml}</td>
             <td style="color: ${gainColor}; font-weight: bold;">${gainSign}${formatYen(Math.abs(gain))}</td>
-            <td style="text-align: center;">
+            <td style="text-align: center; white-space: nowrap;">
+                <button style="background: none; border: none; cursor: pointer; color: var(--text-sub); display: inline-flex; align-items: center; margin-right: 6px;" onclick="openEditHolding('${escapeHtml(stock.code)}')" title="株数・取得単価を修正"><svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg></button>
                 <button style="background: none; border: none; cursor: pointer; color: var(--text-sub); display: inline-flex; align-items: center;" onclick="removeStockFromPortfolio('${escapeHtml(stock.code)}')" title="削除"><svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
             </td>
         </tr>`;
     }).join('');
 
     renderHoldingCards(portfolio);
+}
+
+// ===== 保有内容の修正（スクショの読み取り違いを直せるようにする） =====
+let EDITING_CODE = null;
+
+function openEditHolding(code) {
+    const stock = getPortfolio().find(s => s.code === code);
+    if (!stock) return;
+    EDITING_CODE = code;
+    document.getElementById('editHoldingName').textContent = `${stock.name}（${stock.code}）`;
+    document.getElementById('editShares').value = stock.shares;
+    document.getElementById('editPrice').value = stock.acquisitionPrice;
+    updateEditPreview();
+    document.getElementById('modalOverlay').style.display = 'block';
+    document.getElementById('editHoldingModal').style.display = 'block';
+}
+
+function closeEditHolding() {
+    EDITING_CODE = null;
+    document.getElementById('modalOverlay').style.display = 'none';
+    document.getElementById('editHoldingModal').style.display = 'none';
+}
+
+function updateEditPreview() {
+    const preview = document.getElementById('editHoldingPreview');
+    if (!preview || !EDITING_CODE) return;
+    const stock = getPortfolio().find(s => s.code === EDITING_CODE);
+    const shares = parseFloat(document.getElementById('editShares').value);
+    const price = parseFloat(document.getElementById('editPrice').value);
+    if (!stock || !(shares > 0) || !(price > 0)) { preview.textContent = ''; return; }
+    const cost = shares * price;
+    const value = shares * stock.currentPrice;
+    const gain = value - cost;
+    preview.innerHTML = `取得総額 ${formatYen(cost)} ・ 現在値 ${formatPrice(stock.currentPrice)} で評価額 ${formatYen(value)}<br>
+        評価損益 <span style="color: ${gain >= 0 ? 'var(--gain)' : 'var(--loss)'}; font-weight: 700;">${gain >= 0 ? '+' : '-'}${formatYen(Math.abs(gain))}</span>`;
+}
+
+function saveEditHolding() {
+    if (!EDITING_CODE) return;
+    const shares = parseInt(document.getElementById('editShares').value, 10);
+    const price = parseFloat(document.getElementById('editPrice').value);
+    if (!shares || shares <= 0) { alert('株数を入力してください'); return; }
+    if (!price || price <= 0) { alert('取得単価を入力してください'); return; }
+
+    const portfolio = getPortfolio();
+    const stock = portfolio.find(s => s.code === EDITING_CODE);
+    if (!stock) { closeEditHolding(); return; }
+    stock.shares = shares;
+    stock.acquisitionPrice = price;
+    localStorage.setItem('portfolio', JSON.stringify(portfolio));
+
+    closeEditHolding();
+    updateDashboard();
+    if (document.getElementById('portfolio').classList.contains('active')) updatePortfolioPage(getPortfolio());
 }
 
 // スマホ用の保有銘柄カード（表は列が潰れて読めないため、同じ情報をカードで出す）
@@ -957,6 +1012,10 @@ function renderHoldingCards(portfolio) {
                 <div><dt>現在値</dt><dd>${formatPrice(stock.currentPrice)}</dd></div>
             </div>
             <div class="holding-card-actions">
+                <button onclick="event.stopPropagation(); openEditHolding('${escapeHtml(stock.code)}')">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
+                    修正
+                </button>
                 <button onclick="event.stopPropagation(); removeStockFromPortfolio('${escapeHtml(stock.code)}')">
                     <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                     削除
@@ -2635,7 +2694,15 @@ function parseStockInfoFromText(rawText) {
     // （行ごとに単位が付かず数字だけ並ぶため、位置で読む必要がある）。
     // 見出しは小さいグレー文字でOCRに失敗しやすいので、明細行の並びからも判定する
     const headerHint = /保有数量|平均取得価額|平均取得単価|取得単価|保有株数|取得価額/.test(squeezeLabelSpaces(text));
-    const rowLike = lines.filter(l => !/[円%％]/.test(l) && isRowStartLine(l) && holdingTokens(l, null).length >= 2).length;
+    const rowLike = lines.filter((l, i) => {
+        if (/[円%％]/.test(l)) return false;
+        const toks = holdingTokens(l, null);
+        if (toks.length < 2) return false;
+        if (isRowStartLine(l)) return true;
+        // 銘柄名と数値がOCRで別々の行になることがある。
+        // 直前が数字を含まない行（＝銘柄名の行）なら、この数値だけの行も明細とみなす
+        return i > 0 && !/\d/.test(lines[i - 1]) && toks.some(t => t.hasDecimal);
+    }).length;
     const tableMode = headerHint || rowLike >= 2;
 
     const pushStock = (code, windowText) => {
