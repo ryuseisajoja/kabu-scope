@@ -815,7 +815,7 @@ function switchPage(pageId) {
     if (target) target.classList.add('active');
 
     document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
-    const navIndex = { 'dashboard': 0, 'portfolio': 1, 'history': 2, 'ai-analysis': 3, 'unit-plan': 4, 'recommend': 5, 'dividend': 6, 'ai-chat': 7, 'guide': 8 };
+    const navIndex = { 'dashboard': 0, 'portfolio': 1, 'history': 2, 'ai-analysis': 3, 'practice': 4, 'unit-plan': 5, 'recommend': 6, 'dividend': 7, 'ai-chat': 8, 'guide': 9 };
     if (navIndex[pageId] !== undefined) {
         const items = document.querySelectorAll('.nav-item');
         if (items[navIndex[pageId]]) items[navIndex[pageId]].classList.add('active');
@@ -838,6 +838,7 @@ function switchPage(pageId) {
     if (pageId === 'recommend') updateRecommendationsDisplay();
     if (pageId === 'dividend') renderDividendPageWithCalendar();
     if (pageId === 'unit-plan') renderUnitPlan();
+    if (pageId === 'practice') renderPracticePage();
 
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -1634,6 +1635,249 @@ function renderDividendCalendar() {
             </button>
         </div>`;
     }).join('');
+}
+
+// ===== 練習モード（仮想売買） =====
+// 本番の保有銘柄（'portfolio'）とは別のキーに保存し、互いに影響しないようにする
+const PRACTICE_KEY = 'practiceState';
+const PRACTICE_DEFAULT_CASH = 1000000;
+
+function getPractice() {
+    let state = null;
+    try {
+        state = JSON.parse(localStorage.getItem(PRACTICE_KEY) || 'null');
+    } catch (e) {
+        state = null;
+    }
+    if (!state || typeof state.cash !== 'number') {
+        state = { initial: PRACTICE_DEFAULT_CASH, cash: PRACTICE_DEFAULT_CASH, holdings: [], log: [], realized: 0, startedAt: new Date().toISOString() };
+    }
+    if (!Array.isArray(state.holdings)) state.holdings = [];
+    if (!Array.isArray(state.log)) state.log = [];
+    if (typeof state.realized !== 'number') state.realized = 0;
+    return state;
+}
+
+function savePractice(state) {
+    state.log = state.log.slice(-300);
+    localStorage.setItem(PRACTICE_KEY, JSON.stringify(state));
+}
+
+function resetPractice() {
+    const input = document.getElementById('practiceInitial');
+    const amount = Math.round(parseFloat(input && input.value) || PRACTICE_DEFAULT_CASH);
+    if (!(amount >= 10000)) { alert('元手は10,000円以上で入力してください'); return; }
+    const current = getPractice();
+    if (current.log.length > 0 && !confirm(`これまでの練習の記録（取引${current.log.length}件）を消して、元手${formatYen(amount)}でやり直します。よろしいですか？`)) return;
+    savePractice({ initial: amount, cash: amount, holdings: [], log: [], realized: 0, startedAt: new Date().toISOString() });
+    PRACTICE_TARGET = null;
+    renderPracticePage();
+}
+
+// 買う銘柄の検索
+function renderPracticeSearch() {
+    const input = document.getElementById('practiceSearchInput');
+    const container = document.getElementById('practiceSearchResults');
+    if (!input || !container) return;
+    const results = searchStocks(input.value);
+    if (input.value.trim() === '') { container.innerHTML = ''; return; }
+    if (results.length === 0) {
+        container.innerHTML = '<p style="padding: 10px; color: var(--text-sub); font-size: 13px;">該当する銘柄が見つかりません</p>';
+        return;
+    }
+    container.innerHTML = results.map(r => `
+        <div class="stock-search-item" onclick="selectPracticeStock('${escapeHtml(r.code)}')">
+            <span class="stock-search-code">${escapeHtml(r.code)}</span>
+            <span class="stock-search-name">${escapeHtml(r.name)}</span>
+            <span class="stock-search-sector">${escapeHtml(r.sector)}</span>
+        </div>`).join('');
+}
+
+let PRACTICE_TARGET = null;
+
+async function selectPracticeStock(code) {
+    const info = getMasterInfo(code);
+    if (!info) return;
+    PRACTICE_TARGET = { code, name: info.name, sector: info.sector, price: 0 };
+    document.getElementById('practiceSearchResults').innerHTML = '';
+    document.getElementById('practiceSearchInput').value = `${code} ${info.name}`;
+    document.getElementById('practiceBuyBox').style.display = 'block';
+    document.getElementById('practiceBuyTarget').textContent = `${info.name}（${code}）`;
+    document.getElementById('practicePrice').textContent = '取得中...';
+    document.getElementById('practiceBuyPreview').textContent = '';
+
+    try {
+        const q = await fetchQuote(code);
+        PRACTICE_TARGET.price = q.price;
+        document.getElementById('practicePrice').textContent = formatPrice(q.price);
+    } catch (e) {
+        document.getElementById('practicePrice').textContent = '取得できません';
+    }
+    updatePracticeBuyPreview();
+}
+
+function updatePracticeBuyPreview() {
+    const box = document.getElementById('practiceBuyPreview');
+    if (!box || !PRACTICE_TARGET) return;
+    const shares = parseInt((document.getElementById('practiceShares') || {}).value, 10);
+    const state = getPractice();
+    if (!PRACTICE_TARGET.price) { box.textContent = '株価を取得できなかったため購入できません。'; return; }
+    if (!shares || shares <= 0) { box.textContent = '株数を入力してください。'; return; }
+    const cost = shares * PRACTICE_TARGET.price;
+    const enough = cost <= state.cash;
+    box.innerHTML = `必要な資金 <strong>${formatYen(cost)}</strong>（残高 ${formatYen(state.cash)}）<br>
+        <span style="color: ${enough ? 'var(--text-sub)' : 'var(--loss)'};">
+            ${enough ? `購入後の残高は ${formatYen(state.cash - cost)} になります。` : '残高が足りません。株数を減らすか、設定で元手を増やしてください。'}
+        </span>`;
+}
+
+function practiceBuy() {
+    if (!PRACTICE_TARGET || !PRACTICE_TARGET.price) { alert('銘柄と株価を確認してください'); return; }
+    const shares = parseInt(document.getElementById('practiceShares').value, 10);
+    if (!shares || shares <= 0) { alert('株数を入力してください'); return; }
+
+    const state = getPractice();
+    const price = PRACTICE_TARGET.price;
+    const cost = shares * price;
+    if (cost > state.cash) { alert(`残高が足りません（必要 ${formatYen(cost)} / 残高 ${formatYen(state.cash)}）`); return; }
+
+    const existing = state.holdings.find(h => h.code === PRACTICE_TARGET.code);
+    if (existing) {
+        const total = existing.avgPrice * existing.shares + cost;
+        existing.shares += shares;
+        existing.avgPrice = total / existing.shares;
+    } else {
+        state.holdings.push({
+            code: PRACTICE_TARGET.code, name: PRACTICE_TARGET.name,
+            sector: PRACTICE_TARGET.sector, shares, avgPrice: price
+        });
+    }
+    state.cash -= cost;
+    state.log.push({ date: new Date().toISOString(), type: 'buy', code: PRACTICE_TARGET.code, name: PRACTICE_TARGET.name, shares, price, amount: cost });
+    savePractice(state);
+
+    document.getElementById('practiceBuyBox').style.display = 'none';
+    document.getElementById('practiceSearchInput').value = '';
+    PRACTICE_TARGET = null;
+    renderPracticePage();
+}
+
+function practiceSell(code) {
+    const state = getPractice();
+    const holding = state.holdings.find(h => h.code === code);
+    if (!holding) return;
+
+    const answer = prompt(`${holding.name} を何株売りますか？（保有 ${holding.shares.toLocaleString()}株）`, String(holding.shares));
+    if (answer === null) return;
+    const shares = parseInt(answer, 10);
+    if (!shares || shares <= 0) { alert('株数を入力してください'); return; }
+    if (shares > holding.shares) { alert(`保有株数（${holding.shares}株）を超えています`); return; }
+
+    const price = PRACTICE_PRICES[code] || holding.avgPrice;
+    const proceeds = shares * price;
+    const gain = (price - holding.avgPrice) * shares;
+
+    holding.shares -= shares;
+    if (holding.shares === 0) state.holdings = state.holdings.filter(h => h.code !== code);
+    state.cash += proceeds;
+    state.realized += gain;
+    state.log.push({ date: new Date().toISOString(), type: 'sell', code, name: holding.name, shares, price, amount: proceeds, gain });
+    savePractice(state);
+    renderPracticePage();
+}
+
+// 練習用の株価は本番と同じ取得経路を使う
+let PRACTICE_PRICES = {};
+
+async function renderPracticePage() {
+    const state = getPractice();
+    const initialInput = document.getElementById('practiceInitial');
+    if (initialInput && document.activeElement !== initialInput) initialInput.value = state.initial;
+
+    if (state.holdings.length > 0) {
+        try {
+            const prices = await fetchRealTimePrices(state.holdings.map(h => h.code));
+            for (const [code, q] of Object.entries(prices)) PRACTICE_PRICES[code] = q.price;
+        } catch (e) {
+            // 取得できなければ前回の値のままにする
+        }
+    }
+
+    const rows = state.holdings.map(h => {
+        const price = PRACTICE_PRICES[h.code] || h.avgPrice;
+        const value = price * h.shares;
+        const cost = h.avgPrice * h.shares;
+        return { ...h, price, value, cost, gain: value - cost };
+    });
+    const marketValue = rows.reduce((s, r) => s + r.value, 0);
+    const totalAsset = state.cash + marketValue;
+    const unrealized = rows.reduce((s, r) => s + r.gain, 0);
+    const totalReturn = state.initial > 0 ? (totalAsset - state.initial) / state.initial * 100 : 0;
+
+    const stats = document.getElementById('practiceStats');
+    if (stats) {
+        const rc = totalAsset >= state.initial ? 'var(--gain)' : 'var(--loss)';
+        stats.innerHTML = `
+            <div class="stat-card"><div><p class="stat-label">資産合計</p><p class="stat-value">${formatYen(totalAsset)}</p>
+                <p class="stat-sub">元手 ${formatYen(state.initial)}</p></div></div>
+            <div class="stat-card"><div><p class="stat-label">トータル損益</p>
+                <p class="stat-value" style="color: ${rc};">${totalAsset >= state.initial ? '+' : '-'}${formatYen(Math.abs(totalAsset - state.initial))}</p>
+                <p class="stat-sub" style="color: ${rc};">${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%</p></div></div>
+            <div class="stat-card"><div><p class="stat-label">使えるお金</p><p class="stat-value">${formatYen(state.cash)}</p>
+                <p class="stat-sub">株の評価額 ${formatYen(marketValue)}</p></div></div>
+            <div class="stat-card"><div><p class="stat-label">確定した損益</p>
+                <p class="stat-value" style="color: ${state.realized >= 0 ? 'var(--gain)' : 'var(--loss)'};">${state.realized >= 0 ? '+' : '-'}${formatYen(Math.abs(state.realized))}</p>
+                <p class="stat-sub">含み損益 ${unrealized >= 0 ? '+' : '-'}${formatYen(Math.abs(unrealized))}</p></div></div>`;
+    }
+
+    const holdingsEl = document.getElementById('practiceHoldings');
+    if (holdingsEl) {
+        holdingsEl.innerHTML = rows.length === 0
+            ? '<p style="color: var(--text-sub); font-size: 13.5px; line-height: 1.8;">まだ何も買っていません。上の検索から銘柄を選んで買ってみましょう。<br>失敗しても実際のお金は減りません。</p>'
+            : rows.map(r => {
+                const up = r.gain >= 0;
+                const pct = r.cost > 0 ? r.gain / r.cost * 100 : 0;
+                return `
+                <div class="holding-card">
+                    <div class="holding-card-top">
+                        <div class="holding-card-name">${escapeHtml(r.name)}
+                            <span class="holding-card-code">${escapeHtml(r.code)} ・ 評価額 ${formatYen(r.value)}</span>
+                        </div>
+                        <div class="holding-card-gain" style="color: ${up ? 'var(--gain)' : 'var(--loss)'};">
+                            <strong>${up ? '+' : '-'}${formatYen(Math.abs(r.gain))}</strong>
+                            <small>${up ? '+' : ''}${pct.toFixed(1)}%</small>
+                        </div>
+                    </div>
+                    <div class="holding-card-grid">
+                        <div><dt>株数</dt><dd>${r.shares.toLocaleString()}株</dd></div>
+                        <div><dt>平均取得</dt><dd>${formatPrice(r.avgPrice)}</dd></div>
+                        <div><dt>現在値</dt><dd>${formatPrice(r.price)}</dd></div>
+                    </div>
+                    <div class="holding-card-actions">
+                        <button onclick="practiceSell('${escapeHtml(r.code)}')">売る</button>
+                    </div>
+                </div>`;
+            }).join('');
+    }
+
+    const logEl = document.getElementById('practiceLog');
+    if (logEl) {
+        const log = state.log.slice().reverse();
+        logEl.innerHTML = log.length === 0
+            ? '<p style="color: var(--text-sub); font-size: 13px;">まだ取引がありません。</p>'
+            : log.map(t => `
+                <div class="trade-log-row">
+                    <div>
+                        <strong>${escapeHtml(t.name)}</strong>
+                        <span class="trade-tag" style="background-color: ${t.type === 'buy' ? 'var(--gain)' : 'var(--loss)'};">${t.type === 'buy' ? '買い' : '売り'}</span>
+                        <p>${new Date(t.date).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} ・ ${t.shares.toLocaleString()}株 × ${formatPrice(t.price)}</p>
+                    </div>
+                    <div class="trade-log-amount">
+                        <strong>${t.type === 'buy' ? '-' : '+'}${formatYen(t.amount)}</strong>
+                        ${typeof t.gain === 'number' ? `<span style="color: ${t.gain >= 0 ? 'var(--gain)' : 'var(--loss)'};">損益 ${t.gain >= 0 ? '+' : '-'}${formatYen(Math.abs(t.gain))}</span>` : '<span>&nbsp;</span>'}
+                    </div>
+                </div>`).join('');
+    }
 }
 
 // ===== 単元達成プランナー =====
