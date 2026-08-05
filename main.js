@@ -2726,15 +2726,22 @@ function renderPendingList() {
     section.style.display = 'block';
     if (count) count.textContent = `（${PENDING_STOCKS.length}件）`;
     if (submitLabel) submitLabel.textContent = `まとめて追加（${PENDING_STOCKS.length}件）`;
-    list.innerHTML = PENDING_STOCKS.map(p => `
+    list.innerHTML = PENDING_STOCKS.map(p => {
+        // すでに保有している銘柄は「置き換え」になることを明示する
+        const held = getPortfolio().find(s => s.code === p.code);
+        const note = held
+            ? `<span style="color: var(--warn);">現在${held.shares.toLocaleString()}株を保有中 → この内容に置き換えます</span>`
+            : '';
+        return `
         <div class="pending-item">
             <div class="pending-info">
                 <strong>${escapeHtml(p.code)} ${escapeHtml(p.name)}</strong>
                 <span>${p.shares.toLocaleString()}株 / 取得単価 ¥${p.price.toLocaleString()}</span>
+                ${note}
             </div>
             <button class="pending-remove" onclick="removePendingStock('${escapeHtml(p.code)}')" title="リストから外す"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-        </div>
-    `).join('');
+        </div>`;
+    }).join('');
 }
 
 async function submitManualAdd() {
@@ -2764,16 +2771,24 @@ async function submitManualAdd() {
 }
 
 // ===== ポートフォリオ操作 =====
-function addStockToPortfolio(code, shares, price, nameOverride = null) {
+// mode = 'set'（既定）… 入力された内容で置き換える。
+//   スクショも手動入力も「今いくら持っているか」を表すため、加算すると
+//   1株保有の銘柄を読み込み直すたびに2株、3株と増えてしまう。
+// mode = 'add' … 買い増しとして株数を足し、取得単価を平均する。
+function addStockToPortfolio(code, shares, price, nameOverride = null, mode = 'set') {
     const master = STOCK_MASTER_DATA[code] || {};
     const info = getMasterInfo(code); // キュレーション → 全銘柄マスターの順で名称・セクター解決
     const portfolio = getPortfolio();
 
     const existing = portfolio.find(s => s.code === code);
-    if (existing) {
+    if (existing && mode === 'add') {
         const totalCost = existing.acquisitionPrice * existing.shares + price * shares;
         existing.shares += shares;
-        existing.acquisitionPrice = Math.round(totalCost / existing.shares);
+        existing.acquisitionPrice = totalCost / existing.shares;
+    } else if (existing) {
+        existing.shares = shares;
+        existing.acquisitionPrice = price;
+        if (nameOverride) existing.name = nameOverride;
     } else {
         portfolio.push({
             code,
@@ -2977,7 +2992,7 @@ async function sendChat() {
     if (!getClaudeApiKey()) {
         // 定型応答モード
         setTimeout(() => {
-            appendChatMessage('ai', `<p>${getAIResponse(message)}</p>`);
+            appendChatMessage('ai', `<p>${escapeHtml(getAIResponse(message)).replace(/\n/g, '<br>')}</p>`);
         }, 600);
         return;
     }
@@ -2990,7 +3005,7 @@ async function sendChat() {
         const reply = await callClaudeAPI(message);
         thinkingMsg.querySelector('.message-content').innerHTML = `<p>${escapeHtml(reply).replace(/\n/g, '<br>')}</p>`;
     } catch (e) {
-        thinkingMsg.querySelector('.message-content').innerHTML = `<p style="color: var(--loss);">${escapeHtml(e.message)}</p><p style="color: var(--text-sub); font-size: 13px; margin-top: 8px;">${getAIResponse(message)}</p>`;
+        thinkingMsg.querySelector('.message-content').innerHTML = `<p style="color: var(--loss);">${escapeHtml(e.message)}</p><p style="color: var(--text-sub); font-size: 13px; margin-top: 8px;">${escapeHtml(getAIResponse(message)).replace(/\n/g, '<br>')}</p>`;
     } finally {
         CHAT_SENDING = false;
         const el = document.querySelector('.chat-history');
@@ -3000,6 +3015,11 @@ async function sendChat() {
 
 function getAIResponse(question) {
     const portfolio = getPortfolio();
+
+    // 一般的な用語説明より、保有内容にもとづく回答を優先する
+    // （「ホンダはどう？」「今いくら？」のような聞き方に対応するため）
+    const personal = answerFromPortfolio(question, portfolio);
+    if (personal) return personal;
 
     if (question.includes('診断') || question.includes('ポートフォリオ') || question.includes('私の')) {
         if (portfolio.length === 0) {
@@ -3022,7 +3042,7 @@ function getAIResponse(question) {
     if (question.includes('NISA')) {
         return '新NISAなら年間360万円（成長投資枠240万円＋つみたて枠120万円）まで非課税投資できます。配当金も売却益も税金ゼロ。個別株の配当をしっかり受け取りたいなら、NISA成長投資枠で高配当銘柄を保有するのが定番戦略です。';
     }
-    if (question.includes('初心者') || question.includes('いくら')) {
+    if (question.includes('初心者') || /いくら(から|くらいから)?(始|はじ)/.test(question)) {
         return '初心者は「配当が安定している」「株主優待がある」「企業規模が大きい」の3つが揃った銘柄から始めるのがおすすめ。金額は無理のない範囲で、まずは10〜30万円程度で1〜2銘柄からスタートし、慣れてきたら分散を増やしましょう。';
     }
     if (question.includes('インデックス') || question.includes('ETF')) {
@@ -3038,7 +3058,91 @@ function getAIResponse(question) {
         return '「推奨銘柄」ページで、あなたのポートフォリオに足りないセクターを補える銘柄を提案しています。ぜひチェックしてみてください！';
     }
 
-    return `「${escapeHtml(question)}」についてですね。配当・優待・NISA・リスク分散・株価などのキーワードで質問いただくと詳しくお答えできます。「買い方ガイド」ページも参考にしてください！`;
+    // ここまでで当てはまらなかった質問は、保有内容や銘柄名から答えられないか探す
+    const fromPortfolio = answerFromPortfolio(question, portfolio);
+    if (fromPortfolio) return fromPortfolio;
+
+    return `「${question}」についてですね。APIキーを設定していない状態では、決まったテーマにしかお答えできません。\n\n` +
+        `いまお答えできるのは次のような質問です。\n` +
+        `・「私のポートフォリオはどう？」（保有内容の要約）\n` +
+        `・「配当はいくら？」「今月の配当は？」\n` +
+        `・「トヨタは持ってる？」など銘柄名を含む質問\n` +
+        `・「あと何株で単元？」「税金はいくら引かれる？」\n` +
+        `・配当／優待／NISA／分散／リスク／手数料／損切り などの用語説明\n\n` +
+        `自由な文章で相談したい場合は、「相談」ページ下部でAnthropicのAPIキーを設定するとAIが直接お答えします。`;
+}
+
+// 保有データや銘柄名をもとに、自由な聞き方でも答えられるものを拾う
+function answerFromPortfolio(question, portfolio) {
+    const q = question.replace(/\s/g, '');
+
+    // 銘柄名・コードが含まれていれば、その銘柄について答える
+    const hit = portfolio.find(s => q.includes(s.code) || (s.name && q.includes(s.name.replace(/\s/g, '').slice(0, 4))));
+    if (hit) {
+        const value = hit.currentPrice * hit.shares;
+        const cost = hit.acquisitionPrice * hit.shares;
+        const gain = value - cost;
+        const div = getDividendInfo(hit.code);
+        const benefit = getBenefitInfo(hit.code);
+        const unitNote = hit.shares < 100
+            ? `100株まであと${100 - hit.shares}株（約${formatYen((100 - hit.shares) * hit.currentPrice)}）です。`
+            : '1単元（100株）以上を保有しています。';
+        return `${hit.name}（${hit.code}）は${hit.shares.toLocaleString()}株を保有中です。\n` +
+            `取得単価 ${formatPrice(hit.acquisitionPrice)} → 現在値 ${formatPrice(hit.currentPrice)}、` +
+            `評価損益は${gain >= 0 ? '+' : '-'}${formatYen(Math.abs(gain))}（${cost > 0 ? (gain / cost * 100).toFixed(1) : '0.0'}%）。\n` +
+            (div.perShare > 0 ? `配当は1株あたり年${div.perShare}円なので、年間で約${formatYen(div.perShare * hit.shares)}の見込みです。\n` : '配当は確認できていません。\n') +
+            (benefit ? `株主優待は「${benefit.content}」です。\n` : '') +
+            unitNote;
+    }
+
+    if (portfolio.length === 0) return null;
+
+    const metrics = computePortfolioMetrics(portfolio);
+
+    // 売る・買うといった判断を求める質問には、判断材料を返す（助言は避ける）
+    if (/売っ|売る|売り|利確|損切|手放/.test(q)) {
+        const losers = portfolio.filter(s => s.currentPrice < s.acquisitionPrice);
+        return `売買の判断そのものはお答えできませんが、判断材料をお伝えします。\n\n` +
+            `現在${portfolio.length}銘柄を保有し、${losers.length}銘柄が取得価格を下回っています。` +
+            `最大銘柄は${metrics.topName}で全体の${metrics.topPct.toFixed(1)}%を占めます。\n` +
+            `一般には「保有した理由が変わったかどうか」で判断し、値動きだけで慌てて決めないのが基本とされています。` +
+            `比率が30%を超える銘柄は、一部を売って分散させる検討材料になります。`;
+    }
+    if (/買[うえおいっ]|購入|買い増|買い足|増やす|追加で/.test(q)) {
+        return `何を買うべきかの助言はできませんが、いまの構成から言えることをお伝えします。\n\n` +
+            `保有は${portfolio.length}銘柄・${metrics.sectors}業種で、最大セクターは${metrics.topSector}が${metrics.topSectorPct.toFixed(1)}%です。\n` +
+            `「単元プラン」ページで100株に届く銘柄と必要金額、「推奨銘柄」ページで未保有の業種の候補が見られます。` +
+            `買う前に影響を見たいときは、単元プランの「買った場合の影響を見る」が使えます。`;
+    }
+    // 税金の質問は「いくら」を含むことが多いので、資産の要約より先に判定する
+    if (/税|手取り|20\.315|源泉/.test(q)) {
+        const { months } = buildDividendCalendar();
+        const gross = months.reduce((s, m) => s + m.gross, 0);
+        const net = months.reduce((s, m) => s + m.net, 0);
+        if (gross > 0) {
+            return `配当には特定口座・一般口座で20.315%の税金がかかります（NISA口座は非課税）。\n` +
+                `いまの設定では年間${formatYen(gross)}の配当に対して手取りは約${formatYen(net)}、差し引かれる税金は約${formatYen(gross - net)}です。\n` +
+                `「配当予測」ページの口座区分でNISAに切り替えると、手取りが変わります。`;
+        }
+        return '配当には特定口座・一般口座で20.315%の税金がかかります（NISA口座は非課税）。配当のある銘柄を登録すると、手取りの目安を計算できます。';
+    }
+    // 「初心者はいくらから始める？」のような一般論は、この先の用語説明に任せる
+    if (/いくら|資産|評価額|儲|損/.test(q) && !/初心者|始め|はじめ/.test(q)) {
+        const cost = portfolio.reduce((s, v) => s + v.acquisitionPrice * v.shares, 0);
+        const gain = metrics.total - cost;
+        return `現在の評価額は${formatYen(metrics.total)}、取得総額は${formatYen(cost)}なので、` +
+            `評価損益は${gain >= 0 ? '+' : '-'}${formatYen(Math.abs(gain))}（${cost > 0 ? (gain / cost * 100).toFixed(2) : '0.00'}%）です。\n` +
+            `年間配当見込みは約${formatYen(metrics.annualDividend)}（利回り${metrics.yieldPct.toFixed(2)}%）。手取りの目安は「配当予測」ページの手取りカレンダーで確認できます。`;
+    }
+    if (/単元|100株|議決権/.test(q)) {
+        const pending = buildUnitPlan().filter(r => !r.achieved);
+        if (pending.length === 0) return '保有中の銘柄はすべて1単元（100株）以上です。株主優待や議決権の条件を満たしています。';
+        const cheapest = pending[0];
+        return `単元（100株）に届いていない銘柄が${pending.length}件あります。\n` +
+            `一番少ない金額で届くのは${cheapest.stock.name}で、あと${cheapest.shortage}株・約${formatYen(cheapest.cost)}です。\n` +
+            `詳しくは「単元プラン」ページをご覧ください。`;
+    }
+    return null;
 }
 
 // ===== ガイドタブ =====
