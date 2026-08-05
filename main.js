@@ -616,7 +616,15 @@ function annualizeDividends(payments, price) {
     const perShare = +annual.toFixed(2);
     const y = price > 0 ? +((perShare / price) * 100).toFixed(2) : 0;
     if (y > MAX_PLAUSIBLE_YIELD) return null;
-    return { d: perShare, y };
+
+    // 直近1年の支払い実績から「何月に権利確定して、1回いくらか」を取り出す。
+    // 配当カレンダーで月別の入金予定を出すために使う
+    const recent = payments.slice(-Math.max(2, freq));
+    const schedule = recent.map(p => ({
+        m: new Date(p.date * 1000).getMonth() + 1,
+        a: +Math.min(p.amount, medianBased > 0 ? median * 2.2 : p.amount).toFixed(2)
+    }));
+    return { d: perShare, y, s: schedule };
 }
 
 async function fetchDividendFromApi(code) {
@@ -642,7 +650,7 @@ async function ensureDividendData(codes) {
     for (const code of targets) {
         try {
             const info = await fetchDividendFromApi(code);
-            cache[code] = info ? { d: info.d, y: info.y, t: now } : { d: 0, y: 0, t: now };
+            cache[code] = info ? { d: info.d, y: info.y, s: info.s || [], t: now } : { d: 0, y: 0, s: [], t: now };
         } catch (e) {
             // 取得できなかった銘柄は次回に再挑戦する（キャッシュに入れない）
         }
@@ -828,7 +836,7 @@ function switchPage(pageId) {
     if (pageId === 'history') renderHistoryPage();
     if (pageId === 'ai-analysis') updateAIAnalysis();
     if (pageId === 'recommend') updateRecommendationsDisplay();
-    if (pageId === 'dividend') renderDividendPage();
+    if (pageId === 'dividend') renderDividendPageWithCalendar();
     if (pageId === 'unit-plan') renderUnitPlan();
 
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1492,6 +1500,140 @@ function renderNextActions(actions) {
     if (!list || !card) return;
     card.style.display = 'block';
     list.innerHTML = actions.map(a => `<li>${a}</li>`).join('');
+}
+
+// 配当ページを描画したあとにカレンダーも更新する
+function renderDividendPageWithCalendar() {
+    renderDividendPage();
+    renderDividendCalendar();
+}
+
+// ===== 手取り配当カレンダー =====
+// 配当は権利確定から入金までおよそ3ヶ月かかる（3月期末なら6月ごろ）。
+// 特定口座・一般口座は20.315%（所得税15.315% + 住民税5%）が源泉徴収される。
+const DIVIDEND_TAX_RATE = 0.20315;
+const ACCOUNT_STORAGE_KEY = 'accountTypes';
+const PAYOUT_DELAY_MONTHS = 3;
+
+function getAccountTypes() {
+    try {
+        return JSON.parse(localStorage.getItem(ACCOUNT_STORAGE_KEY) || '{}');
+    } catch (e) {
+        return {};
+    }
+}
+
+function getAccountType(code) {
+    return getAccountTypes()[code] === 'nisa' ? 'nisa' : 'taxable';
+}
+
+function setAccountType(code, type) {
+    const types = getAccountTypes();
+    types[code] = type === 'nisa' ? 'nisa' : 'taxable';
+    localStorage.setItem(ACCOUNT_STORAGE_KEY, JSON.stringify(types));
+    renderDividendCalendar();
+}
+
+function toggleAccountType(code) {
+    setAccountType(code, getAccountType(code) === 'nisa' ? 'taxable' : 'nisa');
+}
+
+// 月別（入金月ベース）の配当予定を組み立てる
+function buildDividendCalendar() {
+    const cache = getDividendCache();
+    const months = Array.from({ length: 12 }, () => ({ gross: 0, net: 0, items: [] }));
+    let unknown = 0;
+
+    for (const stock of getPortfolio()) {
+        const info = cache[stock.code];
+        const div = getDividendInfo(stock.code);
+        if (!div.perShare || div.perShare <= 0) continue;
+
+        const isNisa = getAccountType(stock.code) === 'nisa';
+        const schedule = (info && Array.isArray(info.s) && info.s.length) ? info.s : null;
+
+        if (!schedule) {
+            // 支払い時期が分からない銘柄は年間額だけ集計し、カレンダーには載せない
+            unknown += div.perShare * stock.shares;
+            continue;
+        }
+
+        for (const pay of schedule) {
+            const gross = pay.a * stock.shares;
+            if (gross <= 0) continue;
+            const net = isNisa ? gross : gross * (1 - DIVIDEND_TAX_RATE);
+            // 権利確定月から約3ヶ月後が入金月
+            const payoutMonth = ((pay.m - 1 + PAYOUT_DELAY_MONTHS) % 12);
+            months[payoutMonth].gross += gross;
+            months[payoutMonth].net += net;
+            months[payoutMonth].items.push({
+                name: stock.name, code: stock.code, gross, net, isNisa, recordMonth: pay.m
+            });
+        }
+    }
+    return { months, unknown };
+}
+
+function renderDividendCalendar() {
+    const calEl = document.getElementById('dividendCalendar');
+    const accEl = document.getElementById('accountSettings');
+    if (!calEl || !accEl) return;
+
+    const portfolio = getPortfolio();
+    const paying = portfolio.filter(s => getDividendInfo(s.code).perShare > 0);
+    if (paying.length === 0) {
+        calEl.innerHTML = '<p style="color: var(--text-sub); font-size: 14px;">配当のある銘柄がまだありません。</p>';
+        accEl.innerHTML = '';
+        return;
+    }
+
+    const { months, unknown } = buildDividendCalendar();
+    const totalGross = months.reduce((s, m) => s + m.gross, 0) + unknown;
+    const totalNet = months.reduce((s, m) => s + m.net, 0);
+    const tax = months.reduce((s, m) => s + (m.gross - m.net), 0);
+    const now = new Date().getMonth();
+    const maxNet = Math.max(...months.map(m => m.net), 1);
+
+    calEl.innerHTML = `
+        <div class="cal-summary">
+            <div><span>年間の手取り見込み</span><strong>${formatYen(totalNet)}</strong></div>
+            <div><span>税引前</span><strong>${formatYen(totalGross)}</strong></div>
+            <div><span>差し引かれる税金</span><strong style="color: var(--loss);">${formatYen(tax)}</strong></div>
+        </div>
+        ${unknown > 0 ? `<p class="cal-note">支払い時期が確認できない銘柄が年${formatYen(unknown)}分あります（カレンダーには含めていません）。</p>` : ''}
+        <div class="cal-grid">
+            ${months.map((m, i) => {
+                const label = (i + 1) + '月';
+                const isNow = i === now;
+                const height = m.net > 0 ? Math.max(6, m.net / maxNet * 100) : 0;
+                return `<div class="cal-month${isNow ? ' cal-now' : ''}${m.net > 0 ? ' cal-has' : ''}" title="${label} ${formatYen(m.net)}">
+                    <div class="cal-bar-wrap"><span class="cal-bar" style="height: ${height}%;"></span></div>
+                    <div class="cal-label">${label}</div>
+                    <div class="cal-amount">${m.net > 0 ? formatYen(Math.round(m.net)) : '—'}</div>
+                </div>`;
+            }).join('')}
+        </div>
+        ${months.some(m => m.items.length) ? `<div class="cal-detail">
+            ${months.map((m, i) => m.items.length === 0 ? '' : `
+                <div class="cal-detail-month">
+                    <h4>${i + 1}月に入金予定 <span>${formatYen(Math.round(m.net))}</span></h4>
+                    ${m.items.map(it => `<p>${escapeHtml(it.name)}
+                        <span>${it.isNisa
+                            ? `${formatYen(Math.round(it.net))}（NISA・非課税）`
+                            : `${formatYen(Math.round(it.net))}（税引前 ${formatYen(Math.round(it.gross))}）`}</span></p>`).join('')}
+                </div>`).join('')}
+        </div>` : ''}`;
+
+    accEl.innerHTML = paying.map(s => {
+        const isNisa = getAccountType(s.code) === 'nisa';
+        return `
+        <div class="acc-row">
+            <span class="acc-name">${escapeHtml(s.name)}<span>${escapeHtml(s.code)}</span></span>
+            <button class="acc-toggle${isNisa ? ' acc-nisa' : ''}" onclick="toggleAccountType('${escapeHtml(s.code)}')">
+                ${isNisa ? 'NISA（非課税）' : '特定・一般（20.315%）'}
+            </button>
+        </div>`;
+    }).join('');
 }
 
 // ===== 単元達成プランナー =====
