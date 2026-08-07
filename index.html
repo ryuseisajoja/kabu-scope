@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=22">
+    <link rel="stylesheet" href="style.css?v=24">
     <script async src="https://cdn.jsdelivr.net/npm/tesseract.js@v5.0.4/dist/tesseract.min.js"></script>
 </head>
 <body>
@@ -601,6 +601,10 @@
                     <label>取得単価 (¥)</label>
                     <input type="number" id="editPrice" min="0.01" step="0.01" oninput="updateEditPreview()" style="width: 100%; padding: 11px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 16px;">
                 </div>
+                <div class="detail-item" id="editFundValueItem" style="display: none;">
+                    <label>現在の評価額 (¥)</label>
+                    <input type="number" id="editFundValue" min="1" oninput="updateEditPreview()" style="width: 100%; padding: 11px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 16px;">
+                </div>
             </div>
             <p id="editHoldingPreview" style="font-size: 13px; color: var(--text-sub); margin: 16px 0 0 0; line-height: 1.7;"></p>
         </div>
@@ -616,6 +620,40 @@
             <button class="modal-close" onclick="closeManualAddModal()">✕</button>
         </div>
         <div class="modal-body">
+            <div class="type-toggle">
+                <button type="button" class="type-btn active" id="typeBtnStock" onclick="setManualType('stock')">株式・ETF</button>
+                <button type="button" class="type-btn" id="typeBtnFund" onclick="setManualType('fund')">投資信託</button>
+            </div>
+            <!-- 投資信託は基準価額を自動取得できないため、金額を手入力してもらう -->
+            <div id="fundForm" style="display: none;">
+                <div class="stock-detail-section">
+                    <h3>投資信託を登録</h3>
+                    <p style="font-size: 12.5px; color: var(--text-sub); line-height: 1.7; margin: 0 0 14px 0;">
+                        投資信託は基準価額を自動で取得できないため、<strong>証券アプリに表示されている金額をそのまま入力</strong>してください。
+                        値動きの反映は手動になります（「修正」からいつでも更新できます）。
+                    </p>
+                    <div class="detail-item" style="margin-bottom: 14px;">
+                        <label>ファンド名</label>
+                        <input type="text" id="fundName" placeholder="例: eMAXIS Slim 全世界株式（オール・カントリー）" autocomplete="off"
+                               style="width: 100%; padding: 11px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 15px;">
+                    </div>
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <label>取得金額（投資した合計）</label>
+                            <input type="number" id="fundCost" min="1" placeholder="例: 100000" inputmode="numeric" oninput="updateFundPreview()"
+                                   style="width: 100%; padding: 11px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 16px;">
+                        </div>
+                        <div class="detail-item">
+                            <label>現在の評価額</label>
+                            <input type="number" id="fundValue" min="1" placeholder="例: 108500" inputmode="numeric" oninput="updateFundPreview()"
+                                   style="width: 100%; padding: 11px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 16px;">
+                        </div>
+                    </div>
+                    <p id="fundPreview" style="font-size: 13px; color: var(--text-sub); margin: 14px 0 0 0; line-height: 1.7;"></p>
+                    <button class="btn btn-primary" style="width: 100%; margin-top: 12px;" onclick="addFundHolding()">この内容で追加する</button>
+                </div>
+            </div>
+            <div id="stockForm">
             <div class="stock-detail-section">
                 <h3>銘柄を検索</h3>
                 <input type="text" id="stockSearchInput" placeholder="銘柄名またはコードで検索（例: トヨタ / 7203）" autocomplete="off" oninput="renderStockSearch()"
@@ -642,12 +680,13 @@
                 <h3>追加する銘柄リスト <span id="pendingCount" style="color: var(--text-sub); font-weight: 400; font-size: 13px;"></span></h3>
                 <div id="pendingList"></div>
             </div>
+            </div>
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeManualAddModal()">キャンセル</button>
-            <button class="btn btn-primary" onclick="submitManualAdd()"><span id="manualSubmitLabel">追加する</span></button>
+            <button class="btn btn-primary" id="manualSubmitBtn" onclick="submitManualAdd()"><span id="manualSubmitLabel">追加する</span></button>
         </div>
     </div>
-    <script src="main.js?v=22"></script>
+    <script src="main.js?v=24"></script>
 </body>
 </html>

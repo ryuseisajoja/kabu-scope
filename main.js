@@ -751,9 +751,11 @@ async function refreshPrices(force = false) {
     if (btn) { btn.disabled = true; setRefreshBtnLabel('更新中...'); }
 
     try {
-        const prices = await fetchRealTimePrices(portfolio.map(s => s.code), force);
+        // 投資信託は基準価額を自動取得できないため、株価の更新対象から外す
+        const marketCodes = portfolio.filter(s => !isFund(s)).map(s => s.code);
+        const prices = await fetchRealTimePrices(marketCodes, force);
         // 中継サーバー設定時は、配当も保有銘柄の分だけその都度取得する
-        await ensureDividendData(portfolio.map(s => s.code));
+        await ensureDividendData(marketCodes);
         let updated = 0;
         let snapshotTime = null;
 
@@ -913,7 +915,7 @@ function updateStockTable(portfolio) {
             : '';
         return `
         <tr>
-            <td><strong>${escapeHtml(stock.name)} (${escapeHtml(stock.code)})</strong>${benefitBadge}</td>
+            <td><strong>${escapeHtml(stock.name)}${isFund(stock) ? '' : ` (${escapeHtml(stock.code)})`}</strong>${benefitBadge}</td>
             <td>${stock.shares.toLocaleString()} 株</td>
             <td>${formatPrice(stock.acquisitionPrice)}</td>
             <td>${formatPrice(stock.currentPrice)} ${changeHtml}</td>
@@ -928,6 +930,74 @@ function updateStockTable(portfolio) {
     renderHoldingCards(portfolio);
 }
 
+// ===== 投資信託 =====
+// 基準価額を自動取得できないため、取得金額と評価額を手入力で管理する。
+// 内部的には shares=1、acquisitionPrice=取得金額、currentPrice=評価額 として扱い、
+// 評価額や構成比の計算を株式と共通にしている。
+function isFund(stock) {
+    return stock && stock.type === 'fund';
+}
+
+function setManualType(type) {
+    const fund = type === 'fund';
+    document.getElementById('fundForm').style.display = fund ? 'block' : 'none';
+    document.getElementById('stockForm').style.display = fund ? 'none' : 'block';
+    document.getElementById('typeBtnFund').classList.toggle('active', fund);
+    document.getElementById('typeBtnStock').classList.toggle('active', !fund);
+    // 投資信託は専用ボタンで追加するので、共通の「追加する」は隠す
+    const submit = document.getElementById('manualSubmitBtn');
+    if (submit) submit.style.display = fund ? 'none' : '';
+}
+
+function updateFundPreview() {
+    const box = document.getElementById('fundPreview');
+    if (!box) return;
+    const cost = parseFloat(document.getElementById('fundCost').value);
+    const value = parseFloat(document.getElementById('fundValue').value);
+    if (!(cost > 0) || !(value > 0)) { box.textContent = ''; return; }
+    const gain = value - cost;
+    box.innerHTML = `損益は <strong style="color: ${gain >= 0 ? 'var(--gain)' : 'var(--loss)'};">${gain >= 0 ? '+' : '-'}${formatYen(Math.abs(gain))}</strong>`
+        + `（${(gain / cost * 100).toFixed(2)}%）になります。`;
+}
+
+function addFundHolding() {
+    const name = (document.getElementById('fundName').value || '').trim();
+    const cost = parseFloat(document.getElementById('fundCost').value);
+    const value = parseFloat(document.getElementById('fundValue').value);
+    if (!name) { alert('ファンド名を入力してください'); return; }
+    if (!(cost > 0)) { alert('取得金額を入力してください'); return; }
+    if (!(value > 0)) { alert('現在の評価額を入力してください'); return; }
+
+    const portfolio = getPortfolio();
+    // 同じ名前の投資信託があれば更新、なければ追加
+    const existing = portfolio.find(s => isFund(s) && s.name === name);
+    if (existing) {
+        existing.acquisitionPrice = cost;
+        existing.currentPrice = value;
+    } else {
+        portfolio.push({
+            code: 'F' + Date.now().toString(36).toUpperCase(),
+            name,
+            sector: '投資信託',
+            type: 'fund',
+            shares: 1,
+            acquisitionPrice: cost,
+            currentPrice: value,
+            addedDate: new Date().toISOString()
+        });
+    }
+    setPortfolio(portfolio);
+
+    document.getElementById('fundName').value = '';
+    document.getElementById('fundCost').value = '';
+    document.getElementById('fundValue').value = '';
+    document.getElementById('fundPreview').textContent = '';
+    closeManualAddModal();
+    switchPage('dashboard');
+    updateDashboard();
+    alert(existing ? `${name} の金額を更新しました` : `${name} を追加しました`);
+}
+
 // ===== 保有内容の修正（スクショの読み取り違いを直せるようにする） =====
 let EDITING_CODE = null;
 
@@ -935,7 +1005,16 @@ function openEditHolding(code) {
     const stock = getPortfolio().find(s => s.code === code);
     if (!stock) return;
     EDITING_CODE = code;
-    document.getElementById('editHoldingName').textContent = `${stock.name}（${stock.code}）`;
+    const fund = isFund(stock);
+    document.getElementById('editHoldingName').textContent = fund ? stock.name : `${stock.name}（${stock.code}）`;
+    // 投資信託は株数ではなく金額で管理するため、入力欄の意味を切り替える
+    const sharesItem = document.getElementById('editShares').closest('.detail-item');
+    const priceLabel = document.getElementById('editPrice').closest('.detail-item').querySelector('label');
+    if (sharesItem) sharesItem.style.display = fund ? 'none' : '';
+    if (priceLabel) priceLabel.textContent = fund ? '取得金額 (¥)' : '取得単価 (¥)';
+    const valueRow = document.getElementById('editFundValueItem');
+    if (valueRow) valueRow.style.display = fund ? '' : 'none';
+    if (fund) document.getElementById('editFundValue').value = stock.currentPrice;
     document.getElementById('editShares').value = stock.shares;
     document.getElementById('editPrice').value = stock.acquisitionPrice;
     updateEditPreview();
@@ -953,28 +1032,41 @@ function updateEditPreview() {
     const preview = document.getElementById('editHoldingPreview');
     if (!preview || !EDITING_CODE) return;
     const stock = getPortfolio().find(s => s.code === EDITING_CODE);
-    const shares = parseFloat(document.getElementById('editShares').value);
+    if (!stock) { preview.textContent = ''; return; }
+    const fund = isFund(stock);
+    const shares = fund ? 1 : parseFloat(document.getElementById('editShares').value);
     const price = parseFloat(document.getElementById('editPrice').value);
-    if (!stock || !(shares > 0) || !(price > 0)) { preview.textContent = ''; return; }
+    if (!(shares > 0) || !(price > 0)) { preview.textContent = ''; return; }
     const cost = shares * price;
-    const value = shares * stock.currentPrice;
+    const value = fund
+        ? (parseFloat(document.getElementById('editFundValue').value) || 0)
+        : shares * stock.currentPrice;
+    if (fund && !(value > 0)) { preview.textContent = ''; return; }
     const gain = value - cost;
-    preview.innerHTML = `取得総額 ${formatYen(cost)} ・ 現在値 ${formatPrice(stock.currentPrice)} で評価額 ${formatYen(value)}<br>
+    preview.innerHTML = `取得${fund ? '金額' : '総額'} ${formatYen(cost)}${fund ? '' : ` ・ 現在値 ${formatPrice(stock.currentPrice)}`} で評価額 ${formatYen(value)}<br>
         評価損益 <span style="color: ${gain >= 0 ? 'var(--gain)' : 'var(--loss)'}; font-weight: 700;">${gain >= 0 ? '+' : '-'}${formatYen(Math.abs(gain))}</span>`;
 }
 
 function saveEditHolding() {
     if (!EDITING_CODE) return;
-    const shares = parseInt(document.getElementById('editShares').value, 10);
-    const price = parseFloat(document.getElementById('editPrice').value);
-    if (!shares || shares <= 0) { alert('株数を入力してください'); return; }
-    if (!price || price <= 0) { alert('取得単価を入力してください'); return; }
-
     const portfolio = getPortfolio();
     const stock = portfolio.find(s => s.code === EDITING_CODE);
     if (!stock) { closeEditHolding(); return; }
-    stock.shares = shares;
-    stock.acquisitionPrice = price;
+
+    const price = parseFloat(document.getElementById('editPrice').value);
+    if (!price || price <= 0) { alert(isFund(stock) ? '取得金額を入力してください' : '取得単価を入力してください'); return; }
+
+    if (isFund(stock)) {
+        const value = parseFloat(document.getElementById('editFundValue').value);
+        if (!value || value <= 0) { alert('現在の評価額を入力してください'); return; }
+        stock.acquisitionPrice = price;
+        stock.currentPrice = value;
+    } else {
+        const shares = parseInt(document.getElementById('editShares').value, 10);
+        if (!shares || shares <= 0) { alert('株数を入力してください'); return; }
+        stock.shares = shares;
+        stock.acquisitionPrice = price;
+    }
     localStorage.setItem('portfolio', JSON.stringify(portfolio));
 
     closeEditHolding();
@@ -1012,7 +1104,7 @@ function renderHoldingCards(portfolio) {
             <div class="holding-card-top">
                 <div class="holding-card-name">
                     ${escapeHtml(stock.name)}${benefit}
-                    <span class="holding-card-code">${escapeHtml(stock.code)} ・ 全体の${ratio.toFixed(1)}%</span>
+                    <span class="holding-card-code">${isFund(stock) ? '投資信託' : escapeHtml(stock.code)} ・ 全体の${ratio.toFixed(1)}%</span>
                 </div>
                 <div class="holding-card-gain" style="color: ${color};">
                     <strong>${up ? '+' : '-'}${formatYen(Math.abs(gain))}</strong>
@@ -1020,9 +1112,13 @@ function renderHoldingCards(portfolio) {
                 </div>
             </div>
             <div class="holding-card-grid">
-                <div><dt>株数</dt><dd>${stock.shares.toLocaleString()}株</dd></div>
-                <div><dt>取得単価</dt><dd>${formatPrice(stock.acquisitionPrice)}</dd></div>
-                <div><dt>現在値</dt><dd>${formatPrice(stock.currentPrice)}</dd></div>
+                ${isFund(stock)
+                    ? `<div><dt>取得金額</dt><dd>${formatYen(stock.acquisitionPrice)}</dd></div>
+                       <div><dt>評価額</dt><dd>${formatYen(value)}</dd></div>
+                       <div><dt>更新</dt><dd style="font-size: 12px; color: var(--text-sub);">手動</dd></div>`
+                    : `<div><dt>株数</dt><dd>${stock.shares.toLocaleString()}株</dd></div>
+                       <div><dt>取得単価</dt><dd>${formatPrice(stock.acquisitionPrice)}</dd></div>
+                       <div><dt>現在値</dt><dd>${formatPrice(stock.currentPrice)}</dd></div>`}
             </div>
             <div class="holding-card-actions">
                 <button onclick="event.stopPropagation(); openEditHolding('${escapeHtml(stock.code)}')">
@@ -2040,7 +2136,7 @@ const TRADING_UNIT = 100;
 // 保有銘柄ごとに「単元まであと何株・いくら・達成すると何が得られるか」を計算する
 function buildUnitPlan() {
     return getPortfolio()
-        .filter(s => normalizeSector(s.sector) !== 'ETF')
+        .filter(s => !isFund(s) && normalizeSector(s.sector) !== 'ETF')
         .map(stock => {
             const shortage = Math.max(0, TRADING_UNIT - stock.shares);
             const cost = Math.round(shortage * stock.currentPrice);
@@ -2550,6 +2646,7 @@ function openManualAdd() {
     document.getElementById('manualAddModal').style.display = 'block';
     MANUAL_SELECTED_CODE = null;
     PENDING_STOCKS = [];
+    setManualType('stock'); // 開くたびに株式の入力に戻す
     renderPendingList();
     const input = document.getElementById('stockSearchInput');
     if (input) { input.value = ''; input.focus(); }
@@ -4290,6 +4387,23 @@ function clearPriceProxy() {
     updateDataSettingsUI();
 }
 
+// 練習モード専用の入口（practice.html）から開かれたときは、練習だけを表示する
+function applyPracticeOnlyMode() {
+    if (new URLSearchParams(location.search).get('mode') !== 'practice') return false;
+    document.body.classList.add('practice-only');
+    document.title = 'カブスコープ 練習モード';
+    const logo = document.querySelector('.logo-area span');
+    if (logo) logo.textContent = 'カブスコープ 練習';
+    // 練習以外のページへの導線を隠す
+    document.querySelectorAll('.nav-item').forEach(el => {
+        if (!/練習/.test(el.textContent)) el.style.display = 'none';
+    });
+    const nav = document.querySelector('.bottom-nav');
+    if (nav) nav.style.display = 'none';
+    switchPage('practice');
+    return true;
+}
+
 // ===== 初期化 =====
 document.addEventListener('DOMContentLoaded', function () {
     updateDataSettingsUI();
@@ -4333,7 +4447,8 @@ document.addEventListener('DOMContentLoaded', function () {
     updateChatSettingsUI();
     updateDashboard();
     refreshPrices(); // 起動時に株価を自動取得（5分キャッシュ）
-    loadFullMaster(); // 全銘柄マスターを先読み（検索用・非同期）
+    loadFullMaster().then(() => { if (document.body.classList.contains('practice-only')) renderPracticePage(); });
+    applyPracticeOnlyMode(); // practice.html から開かれた場合は練習モードだけを表示
     // 株主優待データを先読み。読み込めたらダッシュボードの優待バッジを反映
     loadBenefits().then(b => {
         if (b && document.getElementById('dashboard').classList.contains('active')) updateDashboard();
